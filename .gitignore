@@ -1,0 +1,9 @@
+.vs/
+bin/
+obj/
+node_modules/
+dist/
+
+# Secrete — vezi .env.example pentru șablon
+.env
+appsettings.*.local.json
