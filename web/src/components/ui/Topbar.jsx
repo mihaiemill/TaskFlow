@@ -8,7 +8,8 @@ export function Topbar({ breadcrumbs = [], actions }) {
 
     return (
         <header className={`h-14 backdrop-blur-sm border-b shrink-0 relative flex items-center px-4 z-20
-            ${dark ? "bg-[#1e1c3a]/90 border-[#3a3768]" : "bg-white/90 border-gray-200"}`}>
+            ${dark ? "bg-[#1e1c3a]/90 border-[#3a3768]" : "bg-white/90 border-gray-200"}`}
+            style={{ viewTransitionName: "topbar" }}>
 
             <div className="flex items-center gap-2 flex-1 min-w-0">
                 {/* Logo — fade+slide in/out sincronizat cu sidebar-ul (doar mobil; pe desktop bara minimală are propriul buton) */}

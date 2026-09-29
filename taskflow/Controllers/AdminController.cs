@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using taskflow.Data;
 using taskflow.Models;
+using taskflow.Services;
 
 namespace taskflow.Controllers;
 
@@ -23,7 +24,7 @@ public class AdminController : ControllerBase
         var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
                  ?? User.FindFirst("email")?.Value
                  ?? User.FindFirst("Email")?.Value;
-        return email == "admin@admin.com";
+        return email == AdminAccess.AdminEmail;
     }
 
     private Guid CurrentUserId =>
@@ -57,6 +58,7 @@ public class AdminController : ControllerBase
                 u.Email,
                 u.CreatedAt,
                 u.IsActive,
+                u.Avatar,
                 HasPassword = u.PasswordHash != null,
                 IsGoogleLinked = u.GoogleId != null,
                 ProjectsCount = u.Projects.Count,
@@ -78,6 +80,8 @@ public class AdminController : ControllerBase
             return BadRequest(new { error = "Email, nume și parolă sunt obligatorii." });
         if (dto.Password.Length < 6)
             return BadRequest(new { error = "Parola trebuie să aibă cel puțin 6 caractere." });
+        if (!AvatarCatalog.IsValid(dto.Avatar))
+            return BadRequest(new { error = "Avatar necunoscut." });
 
         var email = dto.Email.Trim();
         if (await _db.Users.AnyAsync(u => u.Email == email))
@@ -89,6 +93,7 @@ public class AdminController : ControllerBase
             FullName = dto.FullName.Trim(),
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password),
             IsActive = true,
+            Avatar = AvatarCatalog.Normalize(dto.Avatar),
         };
         _db.Users.Add(user);
         await _db.SaveChangesAsync();
@@ -100,6 +105,7 @@ public class AdminController : ControllerBase
             user.Email,
             user.CreatedAt,
             user.IsActive,
+            user.Avatar,
             HasPassword = true,
             IsGoogleLinked = false,
             ProjectsCount = 0,
@@ -108,7 +114,7 @@ public class AdminController : ControllerBase
         });
     }
 
-    // PATCH /api/admin/users/{id}/status — flag vizual activ/inactiv
+    // PATCH /api/admin/users/{id}/status — activ/inactiv; un cont inactiv nu se mai poate autentifica
     [HttpPatch("users/{id}/status")]
     public async Task<IActionResult> UpdateUserStatus(Guid id, [FromBody] UpdateUserStatusDto dto)
     {
@@ -116,11 +122,49 @@ public class AdminController : ControllerBase
 
         var user = await _db.Users.FindAsync(id);
         if (user is null) return NotFound();
+        if (!dto.IsActive && user.Email == AdminAccess.AdminEmail)
+            return BadRequest(new { error = "Contul de administrator nu poate fi dezactivat." });
 
         user.IsActive = dto.IsActive;
         await _db.SaveChangesAsync();
 
         return Ok(new { user.Id, user.IsActive });
+    }
+
+    [HttpPatch("users/{id}/avatar")]
+    public async Task<IActionResult> UpdateUserAvatar(Guid id, [FromBody] UpdateUserAvatarDto dto)
+    {
+        if (!IsAdmin()) return Forbid();
+        if (!AvatarCatalog.IsValid(dto.Avatar))
+            return BadRequest(new { error = "Avatar necunoscut." });
+
+        var user = await _db.Users.FindAsync(id);
+        if (user is null) return NotFound();
+
+        user.Avatar = AvatarCatalog.Normalize(dto.Avatar);
+        await _db.SaveChangesAsync();
+
+        return Ok(new { user.Id, user.Avatar });
+    }
+
+    // PATCH /api/admin/users/{id}/name — adminul redenumeste utilizatorul (independent de parola)
+    [HttpPatch("users/{id}/name")]
+    public async Task<IActionResult> UpdateUserName(Guid id, [FromBody] UpdateUserNameDto dto)
+    {
+        if (!IsAdmin()) return Forbid();
+        var fullName = dto.FullName?.Trim();
+        if (string.IsNullOrEmpty(fullName))
+            return BadRequest(new { error = "Numele nu poate fi gol." });
+        if (fullName.Length > 100)
+            return BadRequest(new { error = "Numele poate avea cel mult 100 de caractere." });
+
+        var user = await _db.Users.FindAsync(id);
+        if (user is null) return NotFound();
+
+        user.FullName = fullName;
+        await _db.SaveChangesAsync();
+
+        return Ok(new { user.Id, user.FullName });
     }
 
     // PATCH /api/admin/users/{id}/password — adminul seteaza direct o parola noua
@@ -513,6 +557,8 @@ public record CreateGroupDto(string Name, List<Guid>? UserIds);
 public record UpdatePermissionDto(int PermissionLevel);
 public record AssignmentDto(int Id, string Type, string Name, Guid? UserId, int? GroupId);
 public record CreateAssignmentDto(Guid? UserId, int? GroupId);
-public record CreateUserDto(string Email, string FullName, string Password);
+public record CreateUserDto(string Email, string FullName, string Password, string? Avatar = null);
 public record UpdateUserStatusDto(bool IsActive);
 public record UpdateUserPasswordDto(string NewPassword);
+public record UpdateUserNameDto(string? FullName);
+public record UpdateUserAvatarDto(string? Avatar);

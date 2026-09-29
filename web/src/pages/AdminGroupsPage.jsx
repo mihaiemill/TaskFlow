@@ -3,6 +3,7 @@ import { Topbar } from "../components/ui/Topbar.jsx";
 import { Sidebar } from "../components/ui/Sidebar.jsx";
 import { useTheme } from "../context/ThemeContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useProjects } from "../context/ProjectsContext.jsx";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -12,6 +13,10 @@ import {
     Sheet, SheetContent, SheetHeader, SheetTitle,
     SheetDescription, SheetFooter,
 } from "@/components/ui/sheet";
+import {
+    Dialog, DialogContent, DialogHeader, DialogTitle,
+    DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { apiFetch, SearchInput, PermSelector, PERM_OPTIONS } from "../components/admin/shared.jsx";
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -20,7 +25,7 @@ export default function AdminGroupsPage() {
     const { dark } = useTheme();
     const { token } = useAuth();
 
-    const [projects,       setProjects]       = useState([]);
+    const { projects, refreshProjects } = useProjects();
     const [groups,         setGroups]         = useState([]);
     const [groupsLoading,  setGroupsLoading]  = useState(true);
     const [allUsers,       setAllUsers]       = useState([]);
@@ -39,6 +44,13 @@ export default function AdminGroupsPage() {
     const [duplicateGroup, setDuplicateGroup] = useState(null);
     const [deleteTarget,   setDeleteTarget]   = useState(null);
 
+    // ── dialog: adaugare utilizatori intr-un grup existent ────────────────────
+    const [addGroupId,     setAddGroupId]     = useState(null);
+    const [addUIDs,        setAddUIDs]        = useState(new Set());
+    const [addSearch,      setAddSearch]      = useState("");
+    const [adding,         setAdding]         = useState(false);
+    const [addError,       setAddError]       = useState("");
+
     useEffect(() => {
         if (!token) return;
         fetch("/api/admin/users", { headers: { Authorization:`Bearer ${token}` } })
@@ -48,9 +60,7 @@ export default function AdminGroupsPage() {
             .finally(() => setGroupsLoading(false));
         fetch("/api/admin/assignments", { headers: { Authorization:`Bearer ${token}` } })
             .then(r => r.ok ? r.json() : Promise.reject()).then(setAssignments).catch(console.error);
-        // proiectele utilizatorului curent pentru sidebar
-        fetch("/api/projects", { headers: { Authorization:`Bearer ${token}` } })
-            .then(r => r.ok ? r.json() : Promise.reject()).then(setProjects).catch(console.error);
+        refreshProjects();
     }, [token]);
 
     function resetGroupForm() {
@@ -147,6 +157,47 @@ export default function AdminGroupsPage() {
         }
     }
 
+    function openAddUsers(groupId) {
+        setAddGroupId(groupId); setAddUIDs(new Set()); setAddSearch(""); setAddError("");
+    }
+
+    function toggleAddUser(uid) {
+        setAddUIDs(prev => { const n = new Set(prev); n.has(uid) ? n.delete(uid) : n.add(uid); return n; });
+    }
+
+    async function handleAddUsersToGroup() {
+        const group = groups.find(g => g.id === addGroupId);
+        if (!group) return;
+        if (addUIDs.size === 0) { setAddError("Selecteaza cel putin un utilizator."); return; }
+        const mergedIds = [...new Set([...(group.users?.map(u => u.id) ?? []), ...addUIDs])];
+        setAdding(true); setAddError("");
+        try {
+            const r = await apiFetch(`/api/admin/groups/${group.id}`, token, {
+                method: "PUT",
+                body: JSON.stringify({ name: group.name, userIds: mergedIds }),
+            });
+            if (!r.ok) { const e = await r.json().catch(() => ({})); setAddError(e.error ?? "Eroare la actualizare."); return; }
+            const updated = await r.json();
+            setGroups(prev => prev.map(g => g.id === group.id ? updated : g));
+            setAddGroupId(null);
+        } catch { setAddError("Eroare de retea."); }
+        finally { setAdding(false); }
+    }
+
+    const addGroup = groups.find(g => g.id === addGroupId) ?? null;
+
+    // doar utilizatorii care nu sunt deja in grup
+    const addCandidates = useMemo(() => {
+        if (!addGroup) return [];
+        const memberIds = new Set(addGroup.users?.map(u => u.id) ?? []);
+        return allUsers.filter(u => !memberIds.has(u.id));
+    }, [addGroup, allUsers]);
+
+    const filteredAddCandidates = useMemo(() => {
+        const q = addSearch.trim().toLowerCase();
+        return q ? addCandidates.filter(u => u.fullName.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)) : addCandidates;
+    }, [addCandidates, addSearch]);
+
     const cardBg = dark ? "bg-[#1e1c3a] border-[#3a3768]" : "bg-white border-gray-200";
     const th     = dark ? "text-[#9b98c8]" : "text-gray-500";
     const td     = dark ? "text-white border-[#3a3768]" : "text-gray-800 border-gray-100";
@@ -219,31 +270,34 @@ export default function AdminGroupsPage() {
         <div className={`flex h-screen overflow-hidden ${dark ? "bg-[#16152e]" : "bg-gray-50"}`}>
             <Sidebar projects={projects} />
             <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-                <Topbar breadcrumbs={[{ label:"Grupuri și permisiuni" }]} />
+                <Topbar breadcrumbs={[{ label:"Proiecte", to:"/projects" }, { label:"Grupuri și permisiuni" }]} />
 
-                <main className={`flex-1 overflow-y-auto p-6 sm:p-8 ${dark ? "text-white" : "text-gray-900"}`}>
+                <main className={`flex-1 overflow-y-auto overflow-x-hidden p-6 sm:p-8 ${dark ? "text-white" : "text-gray-900"}`}>
                     <style>{`@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap');`}</style>
 
                     <div className="max-w-6xl mx-auto">
 
                         {/* header */}
-                        <div className="mb-7 flex items-center gap-3">
-                            <div className="w-1 h-9 rounded-full shrink-0" style={{background:"linear-gradient(180deg,#524E91,#5AC4C2)"}}/>
-                            <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2.5">
-                                    <h1 className={`text-2xl font-bold leading-tight ${dark?"text-white":"text-gray-900"}`} style={{fontFamily:"'Space Grotesk',sans-serif"}}>
-                                        Grupuri și permisiuni
-                                    </h1>
-                                    {!groupsLoading && groups.length > 0 && (
-                                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${dark ? "bg-[#2d2b52] text-[#9b98c8]" : "bg-gray-100 text-gray-500"}`}>
-                                            {groups.length}
-                                        </span>
-                                    )}
+                        {/* pe mobil: titlu + descriere, apoi butonul pe toată lățimea; de la sm: pe un rând */}
+                        <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-3">
+                            <div className="flex items-stretch gap-3 flex-1 min-w-0">
+                                <div className="w-1 rounded-full shrink-0" style={{background:"linear-gradient(180deg,#524E91,#5AC4C2)"}}/>
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2.5">
+                                        <h1 className={`text-xl sm:text-2xl font-bold leading-tight truncate ${dark?"text-white":"text-gray-900"}`} style={{fontFamily:"'Space Grotesk',sans-serif"}}>
+                                            Grupuri și permisiuni
+                                        </h1>
+                                        {!groupsLoading && groups.length > 0 && (
+                                            <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${dark ? "bg-[#2d2b52] text-[#9b98c8]" : "bg-gray-100 text-gray-500"}`}>
+                                                {groups.length}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className={`text-xs mt-1 ${dark?"text-[#6b68a0]":"text-gray-400"}`}>Organizează utilizatorii în grupuri și controlează nivelul de acces</p>
                                 </div>
-                                <p className={`text-xs mt-1 ${dark?"text-[#6b68a0]":"text-gray-400"}`}>Organizează utilizatorii în grupuri și controlează nivelul de acces</p>
                             </div>
                             <button onClick={() => setSheetOpen(true)}
-                                className="shrink-0 inline-flex items-center gap-1.5 h-9 px-4 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90 cursor-pointer"
+                                className="shrink-0 w-full sm:w-auto inline-flex items-center justify-center gap-1.5 h-10 sm:h-9 px-4 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90 cursor-pointer"
                                 style={{background:"linear-gradient(135deg,#524E91,#5AC4C2)"}}>
                                 <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -365,9 +419,11 @@ export default function AdminGroupsPage() {
                                         </div>
 
                                         <div className="px-4 py-3.5 flex-1">
-                                            {g.users?.length > 0 ? (
-                                                <div className="flex flex-wrap gap-1.5">
-                                                    {g.users.map(u => (
+                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                    {g.users?.length === 0 && (
+                                                        <p className={`text-xs italic mr-1 ${dark?"text-[#6b68a0]":"text-gray-400"}`}>Niciun utilizator în grup.</p>
+                                                    )}
+                                                    {g.users?.map(u => (
                                                         <div key={u.id}
                                                             className={`flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full text-xs border
                                                                 ${dark ? "bg-[#2d2b52] border-[#3a3768] text-[#9b98c8]" : "bg-gray-100 border-gray-200 text-gray-600"}`}>
@@ -383,10 +439,16 @@ export default function AdminGroupsPage() {
                                                             </button>
                                                         </div>
                                                     ))}
-                                                </div>
-                                            ) : (
-                                                <p className={`text-xs italic ${dark?"text-[#6b68a0]":"text-gray-400"}`}>Niciun utilizator în grup.</p>
-                                            )}
+                                                    <button onClick={() => openAddUsers(g.id)}
+                                                        title="Adauga utilizatori in grup"
+                                                        className={`flex items-center gap-1 pl-2 pr-2.5 py-1 rounded-full text-xs font-medium border border-dashed transition-colors cursor-pointer
+                                                            ${dark ? "border-[#524E91]/60 text-[#9b98c8] hover:bg-[#524E91]/20 hover:text-white" : "border-[#524E91]/40 text-[#524E91] hover:bg-[#524E91]/5"}`}>
+                                                        <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                                            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                                                        </svg>
+                                                        Adaugă
+                                                    </button>
+                                            </div>
                                         </div>
                                     </div>
                                 ))}
@@ -397,11 +459,11 @@ export default function AdminGroupsPage() {
                         <div className="flex items-center gap-2 mt-8 mb-3">
                             <h2 className={`text-xs font-semibold uppercase tracking-widest ${dark?"text-[#6b68a0]":"text-gray-400"}`}>Utilizatori și acces</h2>
                         </div>
-                        <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
+                        <div className={`rounded-2xl border ${cardBg}`}>
                             <div className="px-5 pt-4 pb-1">
                                 <SearchInput value={tableSearch} onChange={setTableSearch} placeholder="Cauta dupa nume, email sau grup..." dark={dark}/>
                             </div>
-                            <ScrollArea className="h-100 mt-2">
+                            <div className="h-100 mt-2 overflow-y-auto overflow-x-hidden">
                                 <div className="px-3 pb-3">
                                     <Table>
                                         <TableHeader><TableRow className="border-0">
@@ -462,7 +524,7 @@ export default function AdminGroupsPage() {
                                         </TableBody>
                                     </Table>
                                 </div>
-                            </ScrollArea>
+                            </div>
                         </div>
                     </div>
                 </main>
@@ -548,6 +610,75 @@ export default function AdminGroupsPage() {
                 </SheetFooter>
             </SheetContent>
         </Sheet>
+
+        {/* Dialog — adaugare utilizatori in grup */}
+        <Dialog open={!!addGroup} onOpenChange={open => !open && setAddGroupId(null)}>
+            <DialogContent className={`sm:max-w-md ${dark ? "bg-[#1e1c3a] border-[#3a3768]" : ""}`}>
+                <DialogHeader>
+                    <DialogTitle className={dark ? "text-white" : "text-gray-900"}>Adaugă utilizatori</DialogTitle>
+                    <DialogDescription className={`text-xs ${dark ? "text-[#9b98c8]" : "text-gray-400"}`}>
+                        În grupul <span className="font-semibold" style={{color:"#524E91"}}>{addGroup?.name}</span>. Apar doar utilizatorii care nu sunt deja membri.
+                    </DialogDescription>
+                </DialogHeader>
+
+                {addCandidates.length === 0 ? (
+                    <div className={`rounded-lg border py-8 text-center text-xs ${dark?"border-[#3a3768] text-[#6b68a0]":"border-gray-200 text-gray-400"}`}>
+                        Toți utilizatorii sunt deja în acest grup.
+                    </div>
+                ) : (
+                    <div className="space-y-1.5">
+                        <SearchInput value={addSearch} onChange={setAddSearch} placeholder="Cauta utilizator..." dark={dark}/>
+                        <div className={`rounded-lg border overflow-hidden ${dark?"border-[#3a3768]":"border-gray-200"}`}>
+                            <ScrollArea className="h-64">
+                                {filteredAddCandidates.length === 0
+                                    ? <div className={`py-4 text-center text-xs ${dark?"text-[#6b68a0]":"text-gray-400"}`}>Niciun utilizator gasit.</div>
+                                    : filteredAddCandidates.map(u => {
+                                        const sel = addUIDs.has(u.id);
+                                        const checkId = `ga-${u.id}`;
+                                        return (
+                                            <div key={u.id} onClick={() => toggleAddUser(u.id)}
+                                                className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors border-b last:border-0
+                                                    ${dark ? "border-[#3a3768] hover:bg-[#2d2b52]" : "border-gray-100 hover:bg-gray-50"}
+                                                    ${sel ? dark?"bg-[#524E91]/10":"bg-[#524E91]/5" : ""}`}>
+                                                <Checkbox
+                                                    id={checkId}
+                                                    checked={sel}
+                                                    onCheckedChange={() => toggleAddUser(u.id)}
+                                                    onClick={e => e.stopPropagation()}
+                                                    className="shrink-0 data-[state=checked]:bg-[#524E91] data-[state=checked]:border-[#524E91]"
+                                                />
+                                                <Label htmlFor={checkId} className="flex flex-col min-w-0 cursor-pointer gap-0" onClick={e => e.preventDefault()}>
+                                                    <span className={`text-xs font-medium truncate leading-tight ${dark?"text-white":"text-gray-800"}`}>{u.fullName}</span>
+                                                    <span className={`text-[11px] truncate leading-tight ${dark?"text-[#6b68a0]":"text-gray-400"}`}>{u.email}</span>
+                                                </Label>
+                                            </div>
+                                        );
+                                    })
+                                }
+                            </ScrollArea>
+                        </div>
+                        {addUIDs.size > 0 && (
+                            <p className={`text-xs ${dark?"text-[#9b98c8]":"text-gray-500"}`}>
+                                <span className="font-medium" style={{color:"#524E91"}}>{addUIDs.size}</span> utilizator{addUIDs.size!==1?"i":""} selectat{addUIDs.size!==1?"i":""}
+                            </p>
+                        )}
+                    </div>
+                )}
+                {addError && <p className="text-xs text-rose-400">{addError}</p>}
+
+                <DialogFooter className="flex flex-row gap-2">
+                    <button type="button" onClick={() => setAddGroupId(null)}
+                        className={`flex-1 h-9 rounded-lg text-sm border transition-colors ${dark ? "border-[#3a3768] text-[#9b98c8] hover:bg-[#524E91]/20 hover:text-white" : "border-gray-200 text-gray-600 hover:border-[#524E91] hover:text-[#524E91]"}`}>
+                        Anuleaza
+                    </button>
+                    <button onClick={handleAddUsersToGroup} disabled={adding || addUIDs.size === 0}
+                        className="flex-1 h-9 rounded-lg text-sm font-semibold text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
+                        style={{background:"linear-gradient(135deg,#524E91,#5AC4C2)"}}>
+                        {adding ? "Se adauga..." : "Adaugă în grup"}
+                    </button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
 
         <AlertDialog open={!!duplicateGroup} onOpenChange={open => !open && setDuplicateGroup(null)}>
             <AlertDialogContent className="max-w-sm">

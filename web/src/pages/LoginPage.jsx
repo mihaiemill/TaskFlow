@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useTheme } from "../context/ThemeContext.jsx";
 import api from "../api/axiosInstance.js";
@@ -8,14 +8,31 @@ import { Button } from "../components/ui/button.jsx";
 import { Input } from "../components/ui/input.jsx";
 import { Label } from "../components/ui/label.jsx";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card.jsx";
+import {
+    AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogDescription,
+    AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "../components/ui/alert-dialog.jsx";
+
+const ADMIN_PHONE = "+4038940";
 
 export default function LoginPage() {
     const [form, setForm] = useState({ email: "", password: "" });
-    const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
     const { login } = useAuth();
     const { dark } = useTheme();
     const navigate = useNavigate();
+
+    // Cont inactiv: vine fie din răspunsul la login (403), fie din redirect-ul Google (?error=account_inactive)
+    const [searchParams, setSearchParams] = useSearchParams();
+    // Google a refuzat autentificarea (ex. contul de admin se loghează doar cu parolă)
+    const [error, setError] = useState(() =>
+        searchParams.get("error") === "google_failed" ? "Autentificarea cu Google nu a reușit. Folosește emailul și parola." : "");
+    const [inactiveOpen, setInactiveOpen] = useState(() => searchParams.get("error") === "account_inactive");
+
+    const closeInactive = () => {
+        setInactiveOpen(false);
+        if (searchParams.has("error")) setSearchParams({}, { replace: true });
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -25,8 +42,12 @@ export default function LoginPage() {
             const { data } = await api.post("/auth/login", form);
             login(data.token);
             navigate("/projects");
-        } catch {
-            setError("Email sau parolă incorectă.");
+        } catch (err) {
+            if (err.response?.status === 403 && err.response.data?.code === "account_inactive") {
+                setInactiveOpen(true);
+            } else {
+                setError("Email sau parolă incorectă.");
+            }
         } finally {
             setLoading(false);
         }
@@ -162,6 +183,30 @@ export default function LoginPage() {
 
             {/* Bottom spacer */}
             <div className="flex-1 min-h-4 md:min-h-8" />
+
+            <AlertDialog open={inactiveOpen} onOpenChange={open => !open && closeInactive()}>
+                <AlertDialogContent className="max-w-sm">
+                    <AlertDialogHeader>
+                        <div className="flex items-center gap-3 mb-1">
+                            <div className="flex items-center justify-center w-9 h-9 rounded-full bg-amber-400/15 shrink-0">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                                </svg>
+                            </div>
+                            <AlertDialogTitle className="text-base">Cont inactiv</AlertDialogTitle>
+                        </div>
+                        <AlertDialogDescription className="pl-12">
+                            Contul tău este inactiv. Contactează administratorul la {ADMIN_PHONE}.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter className="mt-2">
+                        <AlertDialogAction onClick={closeInactive} className="text-white border-0"
+                            style={{ background: "linear-gradient(135deg, #524E91, #5AC4C2)" }}>
+                            Am înțeles
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 }

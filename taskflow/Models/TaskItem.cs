@@ -22,4 +22,5 @@ public class TaskItem
 
     public ICollection<TaskTag> TaskTags { get; set; } = [];
     public ICollection<Comment> Comments { get; set; } = [];
+    public ICollection<TaskImage> Images { get; set; } = [];
 }

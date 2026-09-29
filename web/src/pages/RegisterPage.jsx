@@ -8,9 +8,10 @@ import { Button } from "../components/ui/button.jsx";
 import { Input } from "../components/ui/input.jsx";
 import { Label } from "../components/ui/label.jsx";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card.jsx";
+import { AvatarPicker } from "../components/UserAvatar.jsx";
 
 export default function RegisterPage() {
-    const [form, setForm] = useState({ email: "", password: "", fullName: "" });
+    const [form, setForm] = useState({ email: "", password: "", fullName: "", avatar: null });
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
     const { login } = useAuth();
@@ -97,6 +98,13 @@ export default function RegisterPage() {
                                     onChange={e => setForm(f => ({ ...f, fullName: e.target.value }))}
                                     className={`h-11 ${dark ? "bg-[#2d2b52] border-[#3a3768] text-white placeholder:text-[#6b68a0] focus:border-[#524E91]" : "bg-gray-50 border-gray-300 text-gray-900 placeholder:text-gray-400 focus:border-[#524E91]"}`}
                                 />
+                            </div>
+                            <div className="space-y-2">
+                                <Label className={dark ? "text-[#c4c2e8]" : "text-gray-700"}>
+                                    Avatar <span className={`font-normal ${dark ? "text-[#6b68a0]" : "text-gray-400"}`}>(opțional)</span>
+                                </Label>
+                                <AvatarPicker value={form.avatar} onChange={avatar => setForm(f => ({ ...f, avatar }))}
+                                    name={form.fullName} dark={dark} allowNone />
                             </div>
                             <div className="space-y-1.5 md:space-y-2">
                                 <Label htmlFor="email" className={dark ? "text-[#c4c2e8]" : "text-gray-700"}>Email</Label>

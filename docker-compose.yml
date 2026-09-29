@@ -26,11 +26,15 @@ services:
       Jwt__Audience: "TaskFlowClient"
       Google__ClientId: ${GOOGLE_CLIENT_ID:?seteaza GOOGLE_CLIENT_ID in .env}
       Google__ClientSecret: ${GOOGLE_CLIENT_SECRET:?seteaza GOOGLE_CLIENT_SECRET in .env}
+      # parola contului admin@admin.com — folosită o singură dată, doar dacă adminul nu există încă
+      Admin__InitialPassword: ${ADMIN_PASSWORD:-}
       ASPNETCORE_URLS: "http://+:8080"
       # BackendUrl = redirect_uri trimis la Google (trebuie să fie whitelist-uit în Google Cloud Console)
-      # FrontendUrl = unde redirecționăm browserul după login (containerul nginx al frontend-ului, portul publicat 8082 — NU 5173, ăla e doar Vite dev server)
+      # FrontendUrl = unde redirecționăm browserul după login (containerul nginx al frontend-ului, portul publicat 8090 — NU 5173, ăla e doar Vite dev server)
       BackendUrl: "http://localhost:5179"
-      FrontendUrl: "http://localhost:8082"
+      FrontendUrl: "http://localhost:8090"
+    volumes:
+      - uploads:/app/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -38,8 +42,9 @@ services:
   frontend:
     build: ./web
     ports:
-      - "8082:80"
+      - "8090:80"
     depends_on:
       - backend
 volumes:
   pgdata:
+  uploads:

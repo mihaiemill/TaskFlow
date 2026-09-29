@@ -24,6 +24,13 @@ public class TaskDto
     public Guid? AssigneeId { get; set; }
     public List<TagDto> Tags { get; set; } = [];
     public List<CommentDto> Comments { get; set; } = [];
+    public List<TaskImageDto> Images { get; set; } = [];
+}
+
+public class TaskImageDto
+{
+    public Guid Id { get; set; }
+    public DateTime CreatedAt { get; set; }
 }
 
 public class TagDto
@@ -58,6 +65,8 @@ public class CreateTaskDto
     public Guid ProjectId { get; set; }
 
     public Guid? AssigneeId { get; set; }
+
+    public taskflow.Models.TaskStatus? Status { get; set; }
 }
 
 public class UpdateTaskDto

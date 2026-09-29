@@ -12,6 +12,13 @@ public class RegisterDto
 
     [Required]
     public string FullName { get; set; } = null!;
+
+    public string? Avatar { get; set; }
+}
+
+public class UpdateAvatarDto
+{
+    public string? Avatar { get; set; }
 }
 
 public class LoginDto
@@ -21,6 +28,14 @@ public class LoginDto
 
     [Required]
     public string Password { get; set; } = null!;
+}
+
+public class ChangePasswordDto
+{
+    public string? CurrentPassword { get; set; }
+
+    [Required, MinLength(6)]
+    public string NewPassword { get; set; } = null!;
 }
 
 public class AuthResponseDto

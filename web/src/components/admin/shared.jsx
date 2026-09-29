@@ -56,13 +56,13 @@ export function SearchInput({ value, onChange, placeholder, dark }) {
     );
 }
 
-export function FilterDropdown({ value, onChange, options, placeholder, dark, colorMap }) {
+export function FilterDropdown({ value, onChange, options, placeholder, dark, colorMap, className = "" }) {
     const [open, setOpen] = useState(false);
     const selected = options.find(o => o.value === value);
     return (
-        <div className="relative shrink-0">
+        <div className={`relative shrink-0 ${className}`}>
             <button onClick={() => setOpen(p => !p)}
-                className={`h-9 flex items-center gap-2 pl-3 pr-2.5 rounded-lg border text-xs transition-colors whitespace-nowrap
+                className={`h-9 w-full flex items-center justify-between gap-2 pl-3 pr-2.5 rounded-lg border text-xs transition-colors whitespace-nowrap
                     ${value ? "border-[#524E91] " + (dark ? "bg-[#524E91]/15 text-white" : "bg-[#524E91]/8 text-[#524E91]")
                             : dark ? "bg-[#2d2b52] border-[#3a3768] text-[#9b98c8] hover:border-[#524E91]/60"
                                    : "bg-gray-50 border-gray-200 text-gray-500 hover:border-[#524E91]/40"}`}>

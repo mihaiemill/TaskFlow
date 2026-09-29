@@ -1,7 +1,10 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { flushSync } from "react-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import { FavoritesProvider } from "./context/FavoritesContext";
 import { SidebarProvider } from "./context/SidebarContext";
+import { ProjectsProvider } from "./context/ProjectsContext";
 import PrivateRoute from "./components/PrivateRoute";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -13,13 +16,33 @@ import AdminDashboardPage from "./pages/AdminDashboardPage";
 import AdminGroupsPage from "./pages/AdminGroupsPage";
 import AdminUsersPage from "./pages/AdminUsersPage";
 
+function AnimatedRoutes({ children }) {
+    const location = useLocation();
+    const [displayLocation, setDisplayLocation] = useState(location);
+
+    useEffect(() => {
+        if (location.key === displayLocation.key) return;
+        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        // doar query-ul s-a schimbat (ex. ?tab= în dashboard) → aceeași pagină, fără tranziție
+        const samePage = location.pathname === displayLocation.pathname;
+        if (!document.startViewTransition || reduceMotion || samePage) {
+            setDisplayLocation(location);
+            return;
+        }
+        document.startViewTransition(() => flushSync(() => setDisplayLocation(location)));
+    }, [location, displayLocation.key]);
+
+    return <Routes location={displayLocation}>{children}</Routes>;
+}
+
 export default function App() {
     return (
         <AuthProvider>
             <FavoritesProvider>
+                <ProjectsProvider>
                 <SidebarProvider>
                     <BrowserRouter>
-                        <Routes>
+                        <AnimatedRoutes>
                             <Route path="/login" element={<LoginPage />} />
                             <Route path="/register" element={<RegisterPage />} />
                             <Route path="/auth/google" element={<GoogleCallbackPage />} />
@@ -42,9 +65,10 @@ export default function App() {
                                 <PrivateRoute><AdminUsersPage /></PrivateRoute>
                             } />
                             <Route path="*" element={<Navigate to="/projects" />} />
-                        </Routes>
+                        </AnimatedRoutes>
                     </BrowserRouter>
                 </SidebarProvider>
+                </ProjectsProvider>
             </FavoritesProvider>
         </AuthProvider>
     );

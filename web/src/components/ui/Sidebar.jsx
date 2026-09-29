@@ -7,6 +7,10 @@ import { useFavorites } from "../../context/FavoritesContext.jsx";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { useSidebarState } from "../../context/SidebarContext.jsx";
 import { ThemeToggle } from "./ThemeToggle.jsx";
+import { ChangePasswordDialog } from "../ChangePasswordDialog.jsx";
+import { UserAvatar } from "../UserAvatar.jsx";
+import { AvatarDialog } from "../AvatarDialog.jsx";
+import { apiFetch } from "../admin/shared.jsx";
 import {
     AlertDialog, AlertDialogAction, AlertDialogCancel,
     AlertDialogContent, AlertDialogDescription,
@@ -81,6 +85,31 @@ function UsersIcon({ className = "" }) {
     );
 }
 
+function ChangePasswordButton({ dark, onClick }) {
+    return (
+        <button
+            onClick={onClick}
+            title="Schimbă parola"
+            className={`p-1.5 rounded-md transition-colors duration-150 cursor-pointer
+                ${dark ? "text-[#9b98c8] hover:text-white hover:bg-[#524E91]/30"
+                       : "text-gray-500 hover:text-[#524E91] hover:bg-[#524E91]/10"}`}
+        >
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+        </button>
+    );
+}
+
+function MyAvatarButton({ name, avatar, onClick }) {
+    return (
+        <button type="button" onClick={onClick} title="Schimbă avatarul"
+            className="shrink-0 rounded-full cursor-pointer transition-transform duration-150 hover:scale-110 focus-visible:outline-2 focus-visible:outline-[#524E91]">
+            <UserAvatar avatar={avatar} name={name} className="size-7 text-base" title="Schimbă avatarul" />
+        </button>
+    );
+}
+
 const RAIL_PROJECT_LIMIT = 5;
 const RAIL_MENU_WIDTH = 192; // w-48
 
@@ -88,6 +117,8 @@ export function Sidebar({ projects = [] }) {
     const [search, setSearch] = useState("");
     const [favOpen, setFavOpen] = useState(true);
     const [logoutOpen, setLogoutOpen] = useState(false);
+    const [passwordOpen, setPasswordOpen] = useState(false);
+    const [avatarOpen, setAvatarOpen] = useState(false);
     const [railExpanded, setRailExpanded] = useState(false);
     const [collapsedFavProjects, setCollapsedFavProjects] = useState({});
     const [adminMenuOpen, setAdminMenuOpen] = useState(false);
@@ -98,7 +129,14 @@ export function Sidebar({ projects = [] }) {
     const location = useLocation();
     const navigate = useNavigate();
     const { favorites, removeFavorite } = useFavorites();
-    const { token, logout } = useAuth();
+    const { token, logout, avatar, setAvatar } = useAuth();
+
+    async function saveMyAvatar(key) {
+        const r = await apiFetch("/api/auth/avatar", token, { method: "PATCH", body: JSON.stringify({ avatar: key }) });
+        if (!r.ok) { const e = await r.json().catch(() => ({})); return e.error ?? "Eroare la salvare."; }
+        setAvatar(key);
+        return null;
+    }
     const fullName = getFullName(token ?? "");
 
     let isAdmin = false;
@@ -115,7 +153,7 @@ export function Sidebar({ projects = [] }) {
     const activeProjectId = location.pathname.match(/\/projects\/(\d+)/)?.[1];
     const activeTaskId    = location.pathname.match(/\/tasks\/(\d+)/)?.[1];
 
-    const toggle = () => setSidebarOpen(o => !o);
+    const toggle = () => { setAdminMenuOpen(false); setSidebarOpen(o => !o); };
 
     const filteredProjects = projects.filter(p =>
         p.name.toLowerCase().includes(search.toLowerCase())
@@ -146,39 +184,40 @@ export function Sidebar({ projects = [] }) {
     return (
         <>
             {/* Mobile overlay */}
-            {sidebarOpen && (
-                <div
-                    className="fixed inset-0 bg-black/50 z-30 md:hidden"
-                    onClick={toggle}
-                />
-            )}
+            <div
+                className={`fixed inset-0 bg-black/50 z-30 md:hidden transition-opacity duration-300 ease-out
+                    ${sidebarOpen ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+                onClick={toggle}
+            />
 
             <aside className={`
                 flex flex-col shrink-0 z-40 overflow-hidden
                 fixed md:relative inset-y-0 left-0 h-screen
-                transition-all duration-300 ease-in-out
+                transition-[width,translate] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]
                 border-r ${sidebarBg}
                 ${sidebarOpen
                     ? "w-64 translate-x-0"
-                    : "-translate-x-full md:translate-x-0 md:w-16"}
-            `}>
+                    : "w-64 -translate-x-full md:translate-x-0 md:w-16"}
+            `} style={{ viewTransitionName: "sidebar" }}>
 
-                {/* ── Logo header ── */}
                 <style>{`@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap');`}</style>
-                <div className={`flex items-center h-14 shrink-0 border-b ${dark ? "border-[#3a3768]" : "border-gray-100"} ${sidebarOpen ? "px-3" : "px-0 justify-center"}`}>
-                    {sidebarOpen && (
-                        <Link
-                            to="/projects"
-                            className={`flex-1 text-left text-base select-none transition-opacity hover:opacity-75 ${dark ? "text-white" : "text-gray-900"}`}
-                            style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "0.01em" }}
-                        >
-                            TaskFlow
-                        </Link>
-                    )}
+                <div className={`relative w-64 h-14 shrink-0 border-b ${dark ? "border-[#3a3768]" : "border-gray-100"}`}>
+                    <Link
+                        to="/projects"
+                        inert={!sidebarOpen}
+                        className={`absolute left-3 top-1/2 -translate-y-1/2 text-base select-none hover:opacity-75
+                            transition-opacity ${sidebarOpen ? "opacity-100 duration-300 delay-100" : "opacity-0 duration-150"}
+                            ${dark ? "text-white" : "text-gray-900"}`}
+                        style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "0.01em" }}
+                    >
+                        TaskFlow
+                    </Link>
                     <button
                         onClick={toggle}
                         title={sidebarOpen ? "Închide sidebar" : "Deschide sidebar"}
-                        className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 transition-transform duration-200 hover:scale-105 cursor-pointer"
+                        className={`absolute left-4 top-3 flex items-center justify-center w-8 h-8 rounded-lg cursor-pointer
+                            transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]
+                            ${sidebarOpen ? "translate-x-49" : "translate-x-0"}`}
                         style={{ background: "linear-gradient(135deg, #524E91, #5AC4C2)" }}
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -187,9 +226,13 @@ export function Sidebar({ projects = [] }) {
                     </button>
                 </div>
 
+                <div className="relative flex-1 min-h-0">
+
                 {/* ── Bară minimală (doar desktop, sidebar închis) ── */}
-                {!sidebarOpen && (
-                    <div className="hidden md:flex flex-col flex-1 min-h-0 items-center overflow-hidden">
+                    <div
+                        inert={sidebarOpen}
+                        className={`hidden md:flex absolute inset-y-0 left-0 w-16 flex-col items-center overflow-hidden transition-opacity
+                            ${sidebarOpen ? "opacity-0 duration-150" : "opacity-100 duration-300 delay-100"}`}>
                         <div className="flex-1 min-h-0 w-full overflow-y-auto flex flex-col items-center gap-1 py-3">
                             {hasFavorites && (
                                 <>
@@ -274,13 +317,7 @@ export function Sidebar({ projects = [] }) {
 
                         {fullName && (
                             <div className={`shrink-0 w-full flex flex-col items-center gap-1.5 py-3 border-t ${dark ? "border-[#3a3768]" : "border-gray-100"}`}>
-                                <div
-                                    className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold"
-                                    title={fullName}
-                                    style={{ background: "linear-gradient(135deg, #524E91, #5AC4C2)" }}
-                                >
-                                    {fullName.charAt(0).toUpperCase()}
-                                </div>
+                                <MyAvatarButton name={fullName} avatar={avatar} onClick={() => setAvatarOpen(true)} />
                                 {isAdmin && (
                                     <div className="relative">
                                         <button
@@ -302,7 +339,7 @@ export function Sidebar({ projects = [] }) {
                                                            : "text-gray-500 hover:text-[#524E91] hover:bg-[#524E91]/10"}`}>
                                             <GearIcon className="w-4 h-4" />
                                         </button>
-                                        {adminMenuOpen && createPortal(
+                                        {adminMenuOpen && !sidebarOpen && createPortal(
                                             <>
                                                 <div className="fixed inset-0 z-40" onClick={() => setAdminMenuOpen(false)} />
                                                 <div
@@ -344,6 +381,7 @@ export function Sidebar({ projects = [] }) {
                                         )}
                                     </div>
                                 )}
+                                <ChangePasswordButton dark={dark} onClick={() => setPasswordOpen(true)} />
                                 <ThemeToggle />
                                 <button
                                     onClick={() => setLogoutOpen(true)}
@@ -359,11 +397,11 @@ export function Sidebar({ projects = [] }) {
                             </div>
                         )}
                     </div>
-                )}
 
-                {/* ── Tot conținutul fade-ează sincronizat cu sidebar-ul ── */}
-                <div className={`flex flex-col flex-1 min-h-0 overflow-hidden transition-opacity duration-300 ease-in-out
-                    ${sidebarOpen ? "opacity-100" : "opacity-0 pointer-events-none hidden"}`}>
+                <div
+                    inert={!sidebarOpen}
+                    className={`absolute inset-y-0 left-0 w-64 flex flex-col overflow-hidden transition-opacity
+                        ${sidebarOpen ? "opacity-100 duration-300 delay-100" : "opacity-0 duration-150"}`}>
 
                     {/* ── Favorite ── */}
                     <div className={`px-3 pt-3 border-b ${dark ? "border-[#3a3768]" : "border-gray-100"}`}>
@@ -570,12 +608,12 @@ export function Sidebar({ projects = [] }) {
                                 </svg>
                             </button>
 
-                            {adminMenuOpen && (
+                            {adminMenuOpen && sidebarOpen && (
                                 <>
                                     <div className="fixed inset-0 z-40" onClick={() => setAdminMenuOpen(false)} />
                                     <div className={`absolute left-3 right-3 bottom-full mb-1 z-50 rounded-xl border shadow-xl overflow-hidden
                                         ${dark ? "bg-[#1e1c3a] border-[#3a3768]" : "bg-white border-gray-200"}`}>
-                                        <Link to="/admin" onClick={() => setAdminMenuOpen(false)}
+                                        <Link to="/admin" onClick={() => { setAdminMenuOpen(false); window.innerWidth < 768 && setSidebarOpen(false); }}
                                             className={`flex items-center gap-2.5 px-3.5 py-2.5 text-xs font-medium transition-colors
                                                 ${location.pathname === "/admin"
                                                     ? dark ? "bg-[#524E91]/20 text-white" : "bg-[#524E91]/8 text-[#524E91]"
@@ -583,7 +621,7 @@ export function Sidebar({ projects = [] }) {
                                             <DashboardIcon className="w-3.5 h-3.5 shrink-0" />
                                             Dashboard
                                         </Link>
-                                        <Link to="/admin/groups" onClick={() => setAdminMenuOpen(false)}
+                                        <Link to="/admin/groups" onClick={() => { setAdminMenuOpen(false); window.innerWidth < 768 && setSidebarOpen(false); }}
                                             className={`flex items-center gap-2.5 px-3.5 py-2.5 text-xs font-medium transition-colors border-t
                                                 ${dark ? "border-[#3a3768]" : "border-gray-100"}
                                                 ${location.pathname === "/admin/groups"
@@ -592,7 +630,7 @@ export function Sidebar({ projects = [] }) {
                                             <GroupsIcon className="w-3.5 h-3.5 shrink-0" />
                                             Grupuri și permisiuni
                                         </Link>
-                                        <Link to="/admin/users" onClick={() => setAdminMenuOpen(false)}
+                                        <Link to="/admin/users" onClick={() => { setAdminMenuOpen(false); window.innerWidth < 768 && setSidebarOpen(false); }}
                                             className={`flex items-center gap-2.5 px-3.5 py-2.5 text-xs font-medium transition-colors border-t
                                                 ${dark ? "border-[#3a3768]" : "border-gray-100"}
                                                 ${location.pathname === "/admin/users"
@@ -611,15 +649,13 @@ export function Sidebar({ projects = [] }) {
                     {fullName && (
                         <div className={`shrink-0 px-3 py-3 border-t ${dark ? "border-[#3a3768]" : "border-gray-100"}`}>
                             <div className="flex items-center gap-2">
-                                <div className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold"
-                                     style={{ background: "linear-gradient(135deg, #524E91, #5AC4C2)" }}>
-                                    {fullName.charAt(0).toUpperCase()}
-                                </div>
+                                <MyAvatarButton name={fullName} avatar={avatar} onClick={() => setAvatarOpen(true)} />
                                 <div className="min-w-0 flex-1">
                                     <p className={`text-xs ${dark ? "text-[#6b68a0]" : "text-gray-400"}`}>Bun venit,</p>
                                     <p className={`text-xs font-medium truncate ${dark ? "text-white" : "text-gray-800"}`}>{fullName}</p>
                                 </div>
                                 <div className="flex items-center gap-0.5 shrink-0">
+                                    <ChangePasswordButton dark={dark} onClick={() => setPasswordOpen(true)} />
                                     <ThemeToggle />
                                     <button
                                         onClick={() => setLogoutOpen(true)}
@@ -637,7 +673,13 @@ export function Sidebar({ projects = [] }) {
                         </div>
                     )}
                 </div>
+                </div>
             </aside>
+
+            <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
+
+            <AvatarDialog open={avatarOpen} onOpenChange={setAvatarOpen} name={fullName} currentAvatar={avatar}
+                description="Alege unul din avatarele standard sau păstrează inițiala numelui." onSave={saveMyAvatar} />
 
             <AlertDialog open={logoutOpen} onOpenChange={setLogoutOpen}>
                 <AlertDialogContent>

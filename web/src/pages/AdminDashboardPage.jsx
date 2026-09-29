@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Topbar } from "../components/ui/Topbar.jsx";
 import { Sidebar } from "../components/ui/Sidebar.jsx";
 import { useTheme } from "../context/ThemeContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { useProjects } from "../context/ProjectsContext.jsx";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
     STATUS_COLOR, PRIORITY_COLOR, STATUS_RO, STATUS_OPTIONS, PRIORITY_OPTIONS,
     ColorDot, Pill, SearchInput, FilterDropdown,
@@ -13,8 +15,7 @@ import {
 // ── UI helpers locale ────────────────────────────────────────────────────────
 
 function TaskProgress({ done, total, dark }) {
-    if (!total) return <span className={`text-xs italic ${dark ? "text-[#6b68a0]" : "text-gray-400"}`}>fără task-uri</span>;
-    const pct = Math.round((done / total) * 100);
+    const pct = total ? Math.round((done / total) * 100) : 100;
     const isDone = pct === 100;
     return (
         <div className="flex flex-col gap-1.5 w-28">
@@ -30,9 +31,15 @@ function TaskProgress({ done, total, dark }) {
     );
 }
 
-function AccessChips({ assignments, dark }) {
+function AccessChips({ assignments, ownerName, dark }) {
     if (!assignments || assignments.length === 0) {
-        return <span className={`text-xs italic ${dark ? "text-[#6b68a0]" : "text-gray-400"}`}>doar owner</span>;
+        return (
+            <span title={`Doar owner-ul are acces: ${ownerName}`}
+                className={`inline-block text-[11px] font-medium px-1.5 py-0.5 rounded-full border truncate max-w-40
+                    ${dark ? "bg-sky-400/10 text-sky-400 border-sky-400/30" : "bg-sky-50 text-sky-600 border-sky-200"}`}>
+                {ownerName}
+            </span>
+        );
     }
     const visible = assignments.slice(0, 2);
     const rest = assignments.length - visible.length;
@@ -55,43 +62,57 @@ function AccessChips({ assignments, dark }) {
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
+const TABS = ["users", "projects", "tasks"];
+
 export default function AdminDashboardPage() {
     const { dark } = useTheme();
     const { token } = useAuth();
+    const navigate = useNavigate();
 
-    const [stats,          setStats]          = useState({ usersCount: null, projectsCount: null, tasksCount: null });
+    // Cardul activ stă în URL (?tab=projects), ca Back de pe un proiect/task să revină pe același card.
+    // "none" = niciun card selectat; lipsa parametrului = "users" (implicit).
+    const [searchParams, setSearchParams] = useSearchParams();
+    const tabParam = searchParams.get("tab");
+    const active = tabParam === "none" ? null : TABS.includes(tabParam) ? tabParam : "users";
+
+    const [stats,         setStats]          = useState({ usersCount: null, projectsCount: null, tasksCount: null });
     const [statsLoading,   setStatsLoading]   = useState(true);
-    const [active,         setActive]         = useState("users");
     const [listData,       setListData]       = useState([]);
-    const [listLoading,    setListLoading]    = useState(false);
+    const [listLoading,    setListLoading]    = useState(true);
     const [search,         setSearch]         = useState("");
     const [statusFilter,   setStatusFilter]   = useState("");
     const [priorityFilter, setPriorityFilter] = useState("");
-    const [projects,       setProjects]       = useState([]);
+    const { projects, refreshProjects } = useProjects();
 
     useEffect(() => {
         if (!token) return;
         fetch("/api/admin/stats", { headers: { Authorization:`Bearer ${token}` } })
             .then(r => r.ok ? r.json() : Promise.reject()).then(setStats).catch(console.error)
             .finally(() => setStatsLoading(false));
-        // load users by default
-        setListLoading(true);
-        fetch("/api/admin/users", { headers: { Authorization:`Bearer ${token}` } })
-            .then(r => r.ok ? r.json() : Promise.reject()).then(setListData).catch(console.error)
-            .finally(() => setListLoading(false));
         // proiectele utilizatorului curent pentru sidebar
-        fetch("/api/projects", { headers: { Authorization:`Bearer ${token}` } })
-            .then(r => r.ok ? r.json() : Promise.reject()).then(setProjects).catch(console.error);
+        refreshProjects();
     }, [token]);
+
+    // lista cardului activ — se reîncarcă la schimbarea tab-ului (click sau Back)
+    useEffect(() => {
+        setListData([]);
+        if (!token || !active) { setListLoading(false); return; }
+        let cancelled = false;
+        setListLoading(true);
+        fetch(`/api/admin/${active}`, { headers: { Authorization:`Bearer ${token}` } })
+            .then(r => r.ok ? r.json() : Promise.reject())
+            .then(data => { if (!cancelled) setListData(data); })
+            .catch(err => { if (!cancelled) console.error(err); })
+            .finally(() => { if (!cancelled) setListLoading(false); });
+        return () => { cancelled = true; };
+    }, [token, active]);
 
     function resetFilters() { setSearch(""); setStatusFilter(""); setPriorityFilter(""); }
 
     function handleCardClick(key) {
-        if (active === key) { setActive(null); setListData([]); resetFilters(); return; }
-        setActive(key); setListData([]); resetFilters(); setListLoading(true);
-        fetch(`/api/admin/${key}`, { headers: { Authorization:`Bearer ${token}` } })
-            .then(r => r.ok ? r.json() : Promise.reject()).then(setListData).catch(console.error)
-            .finally(() => setListLoading(false));
+        resetFilters();
+        // replace: schimbarea de card nu adaugă intrări în istoric, deci Back iese din dashboard
+        setSearchParams({ tab: active === key ? "none" : key }, { replace: true });
     }
 
     const filteredData = useMemo(() => {
@@ -155,7 +176,8 @@ export default function AdminDashboardPage() {
                     {filteredData.length===0
                         ? <TableRow><TableCell colSpan={6} className={`text-center py-8 text-sm ${th}`}>Niciun rezultat.</TableCell></TableRow>
                         : filteredData.map((p,i)=>(
-                            <TableRow key={p.id} className={`border-b ${td} ${stripe} transition-colors align-top`}>
+                            <TableRow key={p.id} onClick={() => navigate(`/projects/${p.id}`)} title={`Deschide proiectul ${p.name}`}
+                                className={`border-b ${td} ${stripe} transition-colors align-top cursor-pointer`}>
                                 <TableCell className={`${th} text-xs`}>{i+1}</TableCell>
                                 <TableCell>
                                     <span className="flex items-center gap-2"><ColorDot color={p.color}/>{p.name}</span>
@@ -166,7 +188,7 @@ export default function AdminDashboardPage() {
                                     <span className={`block text-xs ${th}`}>{p.ownerEmail}</span>
                                 </TableCell>
                                 <TableCell><TaskProgress done={p.doneTasks} total={p.totalTasks} dark={dark}/></TableCell>
-                                <TableCell><AccessChips assignments={p.assignments} dark={dark}/></TableCell>
+                                <TableCell><AccessChips assignments={p.assignments} ownerName={p.ownerName} dark={dark}/></TableCell>
                                 <TableCell className={`${th} text-xs whitespace-nowrap`}>{new Date(p.createdAt).toLocaleDateString("ro-RO")}</TableCell>
                             </TableRow>
                         ))}
@@ -189,7 +211,8 @@ export default function AdminDashboardPage() {
                     {filteredData.length===0
                         ? <TableRow><TableCell colSpan={6} className={`text-center py-8 text-sm ${th}`}>Niciun rezultat.</TableCell></TableRow>
                         : filteredData.map((t,i)=>(
-                            <TableRow key={t.id} className={`border-b ${td} ${stripe} transition-colors`}>
+                            <TableRow key={t.id} onClick={() => navigate(`/tasks/${t.id}`)} title={`Deschide task-ul ${t.title}`}
+                                className={`border-b ${td} ${stripe} transition-colors cursor-pointer`}>
                                 <TableCell className={`${th} text-xs`}>{i+1}</TableCell>
                                 <TableCell className="font-medium whitespace-nowrap">{t.ownerName}</TableCell>
                                 <TableCell><span className="flex items-center gap-2 whitespace-nowrap"><ColorDot color={t.projectColor}/>{t.projectName}</span></TableCell>
@@ -219,9 +242,9 @@ export default function AdminDashboardPage() {
         <div className={`flex h-screen overflow-hidden ${dark ? "bg-[#16152e]" : "bg-gray-50"}`}>
             <Sidebar projects={projects} />
             <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-                <Topbar breadcrumbs={[{ label:"Dashboard" }]} />
+                <Topbar breadcrumbs={[{ label:"Proiecte", to:"/projects" }, { label:"Dashboard" }]} />
 
-                <main className={`flex-1 overflow-y-auto p-6 sm:p-8 ${dark ? "text-white" : "text-gray-900"}`}>
+                <main className={`flex-1 overflow-y-auto overflow-x-hidden p-6 sm:p-8 ${dark ? "text-white" : "text-gray-900"}`}>
                     <style>{`
                         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap');
                         @keyframes msgIn {
@@ -246,31 +269,31 @@ export default function AdminDashboardPage() {
                         </div>
 
                         {/* ── Rând carduri statistici ── */}
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                        <div className="grid grid-cols-3 gap-2 sm:gap-4 mb-6">
                             {statCards.map(({ key, label, value, icon }) => {
                                 const isActive = active === key;
                                 return (
                                     <button key={key} onClick={() => handleCardClick(key)}
-                                        className={`group flex items-center gap-4 rounded-2xl border p-5 text-left transition-all duration-200 cursor-pointer
+                                        className={`group flex flex-col sm:flex-row items-center gap-1.5 sm:gap-4 rounded-xl sm:rounded-2xl border p-2.5 sm:p-5 text-center sm:text-left transition-all duration-200 cursor-pointer
                                             ${isActive
                                                 ? "border-[#524E91] shadow-lg shadow-[#524E91]/15 " + (dark?"bg-[#524E91]/15":"bg-[#524E91]/5")
                                                 : cardBg + " hover:border-[#524E91]/40 hover:shadow-md"}`}>
-                                        <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 transition-colors duration-200
+                                        <div className={`w-9 h-9 sm:w-12 sm:h-12 rounded-lg sm:rounded-xl flex items-center justify-center shrink-0 transition-colors duration-200
                                             ${isActive
                                                 ? "text-white"
                                                 : dark ? "bg-[#2d2b52] text-[#9b98c8] group-hover:text-white" : "bg-[#524E91]/10 text-[#524E91]"}`}
                                             style={isActive ? { background: "linear-gradient(135deg,#524E91,#5AC4C2)" } : {}}>
                                             {icon}
                                         </div>
-                                        <div className="min-w-0 flex-1">
-                                            <p className={`text-[10px] uppercase tracking-widest font-semibold mb-1 ${isActive?"text-[#524E91]":dark?"text-[#9b98c8]":"text-gray-400"}`}>{label}</p>
-                                            <p className={`text-2xl font-bold leading-none ${dark?"text-white":"text-gray-900"}`} style={{fontFamily:"'Space Grotesk',sans-serif"}}>
+                                        <div className="min-w-0 w-full sm:flex-1">
+                                            <p className={`text-[9px] sm:text-[10px] uppercase tracking-wide sm:tracking-widest font-semibold mb-0.5 sm:mb-1 truncate ${isActive?"text-[#524E91]":dark?"text-[#9b98c8]":"text-gray-400"}`}>{label}</p>
+                                            <p className={`text-base sm:text-2xl font-bold leading-none ${dark?"text-white":"text-gray-900"}`} style={{fontFamily:"'Space Grotesk',sans-serif"}}>
                                                 {statsLoading
                                                     ? <span className={`inline-block w-8 h-6 rounded animate-pulse ${dark?"bg-[#3a3768]":"bg-gray-200"}`}/>
                                                     : (value ?? "---")}
                                             </p>
                                         </div>
-                                        <svg xmlns="http://www.w3.org/2000/svg" className={`w-4 h-4 shrink-0 transition-transform duration-200 ${isActive ? "rotate-90" : ""} ${isActive?"text-[#524E91]":dark?"text-[#6b68a0]":"text-gray-300"}`}
+                                        <svg xmlns="http://www.w3.org/2000/svg" className={`hidden sm:block w-4 h-4 shrink-0 transition-transform duration-200 ${isActive ? "rotate-90" : ""} ${isActive?"text-[#524E91]":dark?"text-[#6b68a0]":"text-gray-300"}`}
                                             viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                             <polyline points="9 18 15 12 9 6" />
                                         </svg>
@@ -299,18 +322,14 @@ export default function AdminDashboardPage() {
                                                 <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-[#524E91] text-white text-[10px] font-bold leading-none">{activeFilters}</span>
                                             </button>
                                         )}
-                                        <button onClick={() => { setActive(null); setListData([]); resetFilters(); }}
-                                            className={`p-1 rounded transition-colors ${dark?"text-[#6b68a0] hover:text-white":"text-gray-400 hover:text-gray-700"}`}>
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                                            </svg>
-                                        </button>
                                     </div>
                                 </div>
 
                                 {!listLoading && listData.length > 0 && (
                                     <div className="px-6 pt-4 flex items-center gap-2 flex-wrap" style={{position:"relative",zIndex:10}}>
-                                        <SearchInput value={search} onChange={setSearch} placeholder={searchPH[active]} dark={dark}/>
+                                        <div className="flex-1 min-w-50">
+                                            <SearchInput value={search} onChange={setSearch} placeholder={searchPH[active]} dark={dark}/>
+                                        </div>
                                         {active === "tasks" && (
                                             <>
                                                 <FilterDropdown value={statusFilter} onChange={setStatusFilter} options={STATUS_OPTIONS} placeholder="Status" dark={dark} colorMap={STATUS_COLOR}/>

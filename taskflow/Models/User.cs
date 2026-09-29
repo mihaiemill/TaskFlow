@@ -9,6 +9,7 @@ public class User
     public string? GoogleId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public bool IsActive { get; set; } = true;
+    public string? Avatar { get; set; }
 
     public ICollection<Project> Projects { get; set; } = [];
     public ICollection<TaskItem> AssignedTasks { get; set; } = [];

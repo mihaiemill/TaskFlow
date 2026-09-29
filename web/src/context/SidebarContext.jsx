@@ -4,6 +4,8 @@ const SidebarContext = createContext(null);
 
 export function SidebarProvider({ children }) {
     const [sidebarOpen, setSidebarOpenState] = useState(() => {
+        // Pe mobile sidebar-ul pornește mereu închis
+        if (window.innerWidth < 768) return false;
         const s = localStorage.getItem("sidebarOpen");
         return s !== null ? s === "true" : true;
     });

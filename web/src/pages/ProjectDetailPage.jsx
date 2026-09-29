@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { format } from "date-fns";
 import { ro } from "date-fns/locale";
@@ -6,12 +6,15 @@ import { jwtDecode } from "jwt-decode";
 import { useTheme } from "../context/ThemeContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useFavorites } from "../context/FavoritesContext.jsx";
+import { useProjects } from "../context/ProjectsContext.jsx";
+import { useSidebarState } from "../context/SidebarContext.jsx";
 import api from "../api/axiosInstance.js";
 import { Sidebar } from "../components/ui/Sidebar.jsx";
 import { Topbar } from "../components/ui/Topbar.jsx";
 import { Button } from "../components/ui/button.jsx";
 import { Input } from "../components/ui/input.jsx";
 import { Label } from "../components/ui/label.jsx";
+import PrioritySelect from "../components/PrioritySelect.jsx";
 import { Card, CardContent } from "../components/ui/card.jsx";
 import { Calendar } from "../components/ui/calendar.jsx";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover.jsx";
@@ -39,6 +42,7 @@ import {
     SortableContext, verticalListSortingStrategy, useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { reorderTasks, dropIndex } from "../lib/kanban.js";
 
 const PRIORITY_MAP = {
     High:   { label: "High",   dot: "bg-red-500",   badge: { dark: "bg-red-500/10 text-red-400 border border-red-500/20",     light: "bg-red-50 text-red-600 border border-red-200" } },
@@ -70,31 +74,15 @@ const PRIORITY_FILTER_OPTIONS = [
 ];
 
 const STATUS_ENUM = { Todo: 0, InProgress: 1, Done: 2 };
+const ASSIGNEES_PREVIEW = 3;
 const isColumnId = id => COLUMNS.some(c => c.id === id);
 const statusOf = (id, list) => list.find(t => t.id === id)?.status;
-
-// Mută/repoziționează taskul `activeId` pe poziția `targetIndex` (0-based) în coloana
-// `targetStatus`, păstrând ordinea relativă a celorlalte taskuri neschimbată.
-function reorderTasks(tasks, activeId, targetStatus, targetIndex) {
-    const active = tasks.find(t => t.id === activeId);
-    if (!active) return tasks;
-    const rest = tasks.filter(t => t.id !== activeId);
-    const targetColumnTasks = rest.filter(t => t.status === targetStatus);
-    const idx = Math.max(0, Math.min(targetIndex, targetColumnTasks.length));
-    const movedTask = active.status === targetStatus ? active : { ...active, status: targetStatus };
-
-    if (idx >= targetColumnTasks.length) return [...rest, movedTask];
-
-    const insertPos = rest.findIndex(t => t.id === targetColumnTasks[idx].id);
-    const result = [...rest];
-    result.splice(insertPos, 0, movedTask);
-    return result;
-}
 
 // canDelete: controlat de myPermission (≥3) · canModify (≥2): editare — favoritul e mereu vizibil, indiferent de permisiune
 function TaskCard({ task, dark, onDelete, onEdit, onClick, isDragging, isAnyDragging, canDelete, canModify, projectName, isFavorite, toggleFavorite }) {
     const prio = PRIORITY_MAP[task.priority] ?? PRIORITY_MAP.Low;
-    const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: task.id });
+    // fără drept de modificare (doar Vizualizare) cardul nu poate fi tras — serverul ar refuza oricum mutarea
+    const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: task.id, disabled: !canModify });
     const favorited = isFavorite("task", task.id);
 
     const style = {
@@ -212,7 +200,7 @@ export default function ProjectDetailPage() {
     const { id } = useParams();
     const [tasks, setTasks]       = useState([]);
     const [project, setProject]   = useState(null);
-    const [projects, setProjects] = useState([]);
+    const { projects, refreshProjects } = useProjects();
     const [assignees, setAssignees] = useState([]);
     const [search, setSearch]     = useState("");
     const [statusFilter, setStatusFilter]     = useState("");
@@ -223,6 +211,7 @@ export default function ProjectDetailPage() {
     const [form, setForm] = useState({ title: "", description: "", priority: 1, dueDate: "" });
     const [deleteTaskId, setDeleteTaskId]       = useState(null);
     const [duplicateTaskName, setDuplicateTaskName] = useState(null);
+    const [duplicateEditTaskName, setDuplicateEditTaskName] = useState(null);
     const [activeId, setActiveId] = useState(null);
 
     // Editare task — popup deschis din flashcard-ul din Kanban
@@ -242,8 +231,9 @@ export default function ProjectDetailPage() {
     const [removeAssignTarget, setRemoveAssignTarget] = useState(null);
 
     const { dark } = useTheme();
+    const { sidebarOpen } = useSidebarState();
     const navigate = useNavigate();
-    const { isFavorite, toggleFavorite, removeFavorite } = useFavorites();
+    const { isFavorite, toggleFavorite, removeFavorite, updateFavorite } = useFavorites();
     const { token } = useAuth();
 
     const isAdmin = useMemo(() => {
@@ -264,10 +254,28 @@ export default function ProjectDetailPage() {
     useEffect(() => {
         if (!id || id === "undefined") return;
         api.get(`/projects/${id}`).then(r => setProject(r.data));
-        api.get(`/projects/${id}/tasks`).then(r => setTasks(r.data));
-        api.get("/projects").then(r => setProjects(r.data));
+        api.get(`/projects/${id}/tasks`).then(r => {
+            setTasks(r.data);
+            const lastTaskId = sessionStorage.getItem(`taskflow:lastTask:${id}`);
+            const lastTask = lastTaskId && r.data.find(t => t.id === lastTaskId);
+            if (lastTask) setMobileCol(lastTask.status);
+        });
+        refreshProjects();
         loadAssignees();
     }, [id]);
+
+    // Tine la zi numele proiectului si al taskurilor sale in favorite, oriunde ar fi fost redenumite
+    useEffect(() => {
+        if (project) updateFavorite("project", project.id, { name: project.name, color: project.color });
+    }, [project, updateFavorite]);
+
+    useEffect(() => {
+        tasks.forEach(t => updateFavorite("task", t.id, {
+            name: t.title,
+            projectId: t.projectId,
+            ...(project ? { projectName: project.name } : {}),
+        }));
+    }, [tasks, project, updateFavorite]);
 
     useEffect(() => {
         if (!id || id === "undefined" || !isAdmin) return;
@@ -330,7 +338,7 @@ export default function ProjectDetailPage() {
     const doCreate = async () => {
         setCreating(true);
         try {
-            const payload = { ...form, projectId: id, dueDate: form.dueDate || null };
+            const payload = { ...form, projectId: id, dueDate: form.dueDate || null, status: STATUS_ENUM[mobileCol] };
             const { data } = await api.post("/tasks", payload);
             setTasks(t => [...t, data]);
             setSheetOpen(false);
@@ -352,6 +360,13 @@ export default function ProjectDetailPage() {
 
     const handleEditSave = async () => {
         if (!editTask || !editForm.title.trim()) return;
+        const duplicate = tasks.find(t => t.id !== editTask.id && t.title.trim().toLowerCase() === editForm.title.trim().toLowerCase());
+        if (duplicate) { setDuplicateEditTaskName(editForm.title.trim()); return; }
+        await doEditSave();
+    };
+
+    const doEditSave = async () => {
+        if (!editTask) return;
         setEditSaving(true);
         try {
             const payload = { ...editForm, dueDate: editForm.dueDate || null };
@@ -369,7 +384,19 @@ export default function ProjectDetailPage() {
         setDeleteTaskId(null);
     };
 
-    const handleDragStart = ({ active }) => setActiveId(active.id);
+    // Poziția taskului la începutul drag-ului. handleDragOver mută deja taskul în state
+    // (live preview), deci la drop trebuie să comparăm cu originea, nu cu state-ul curent.
+    const dragOrigin = useRef(null);
+
+    const handleDragStart = ({ active }) => {
+        setActiveId(active.id);
+        const task = tasks.find(t => t.id === active.id);
+        dragOrigin.current = task && {
+            status: task.status,
+            index: tasks.filter(t => t.status === task.status).findIndex(t => t.id === active.id),
+            snapshot: tasks,
+        };
+    };
 
     // Live preview: când taskul e dus deasupra unei alte coloane, îl mutăm deja în state
     // ca să se vadă cum "sare" acolo; reordonarea în cadrul aceleiași coloane e animată
@@ -387,33 +414,68 @@ export default function ProjectDetailPage() {
         setTasks(prev => reorderTasks(prev, active.id, overStatus, newIndex));
     };
 
+    const handleDragCancel = () => {
+        setActiveId(null);
+        if (dragOrigin.current) setTasks(dragOrigin.current.snapshot);
+        dragOrigin.current = null;
+    };
+
     const handleDragEnd = async ({ active, over }) => {
         setActiveId(null);
-        if (!over) return;
-        const draggedTask = tasks.find(t => t.id === active.id);
-        if (!draggedTask) return;
+        const origin = dragOrigin.current;
+        dragOrigin.current = null;
+        if (!origin) return;
 
-        const targetStatus = isColumnId(over.id) ? over.id : statusOf(over.id, tasks);
-        if (!targetStatus) return;
+        const targetStatus = over && (isColumnId(over.id) ? over.id : statusOf(over.id, tasks));
+        if (!targetStatus) { setTasks(origin.snapshot); return; }
 
-        const targetColTasks = tasks.filter(t => t.status === targetStatus && t.id !== active.id);
-        const overIndex = targetColTasks.findIndex(t => t.id === over.id);
-        const newIndex = overIndex === -1 ? targetColTasks.length : overIndex;
+        const newIndex = dropIndex(tasks, active.id, over.id, targetStatus);
 
-        const currentIndex = tasks.filter(t => t.status === draggedTask.status).findIndex(t => t.id === active.id);
-        if (draggedTask.status === targetStatus && currentIndex === newIndex) return;
-
-        const prevSnapshot = tasks;
         setTasks(prev => reorderTasks(prev, active.id, targetStatus, newIndex));
+        if (targetStatus === origin.status && newIndex === origin.index) return;
 
         try {
             await api.patch(`/tasks/${active.id}/reorder`, { status: STATUS_ENUM[targetStatus], order: newIndex });
         } catch {
-            setTasks(prevSnapshot);
+            setTasks(origin.snapshot);
         }
     };
 
     const [mobileCol, setMobileCol] = useState("Todo");
+
+    // Asignați: primii ASSIGNEES_PREVIEW în toolbar, lista completă (useri + grupuri) într-un pop-up
+    const [assigneesOpen, setAssigneesOpen] = useState(false);
+    const assignedUsers  = assignees.filter(a => a.type === "user");
+    const assignedGroups = assignees.filter(a => a.type !== "user");
+
+    const renderAssigneeChip = (a, onRemoveClick) => (
+        <span key={`${a.type}-${a.id}`} className={`inline-flex items-center gap-1.5 text-xs pl-2.5 pr-1 py-0.5 rounded-full border font-medium
+            ${a.type === "user"
+                ? dark ? "bg-sky-400/10 text-sky-400 border-sky-400/30" : "bg-sky-50 text-sky-600 border-sky-200"
+                : dark ? "bg-violet-400/10 text-violet-400 border-violet-400/30" : "bg-violet-50 text-violet-600 border-violet-200"}
+            ${a.isOwner || !isAdmin ? "pr-2.5" : ""}`}>
+            {a.type === "user"
+                ? <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                : <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>}
+            {a.name}
+            {isAdmin && !a.isOwner && (
+                <button
+                    onClick={() => { onRemoveClick?.(); setRemoveAssignTarget({ id: a.id, name: a.name, type: a.type }); }}
+                    title={`Elimină ${a.name} din proiect`}
+                    disabled={assignBusyKey === `remove-${a.id}`}
+                    className={`shrink-0 flex items-center justify-center w-4 h-4 rounded-full transition-colors cursor-pointer disabled:opacity-40
+                        ${dark ? "hover:bg-rose-400/20 hover:text-rose-400" : "hover:bg-rose-100 hover:text-rose-500"}`}>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            )}
+        </span>
+    );
+    const handleTaskClick = (taskId) => {
+        sessionStorage.setItem(`taskflow:lastTask:${id}`, taskId);
+        navigate(`/tasks/${taskId}`);
+    };
     const activeTask = tasks.find(t => t.id === activeId);
     const filteredTasks = tasks.filter(t =>
         t.title.toLowerCase().includes(search.toLowerCase()) &&
@@ -435,9 +497,6 @@ export default function ProjectDetailPage() {
     const inputCls = `h-9 text-sm ${dark
         ? "bg-[#2d2b52] border-[#3a3768] text-white placeholder:text-[#6b68a0] focus:border-[#524E91]"
         : "bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-[#524E91]"}`;
-    const selectCls = `h-9 w-full rounded-md px-3 text-sm focus:outline-none border ${dark
-        ? "bg-[#2d2b52] border-[#3a3768] text-white focus:border-[#524E91]"
-        : "bg-gray-50 border-gray-200 text-gray-900 focus:border-[#524E91]"}`;
     const labelCls = `text-xs font-medium ${dark ? "text-[#9b98c8]" : "text-gray-500"}`;
 
     return (
@@ -453,46 +512,65 @@ export default function ProjectDetailPage() {
                     ]}
                 />
 
-                <main className="flex-1 p-4 sm:p-6 overflow-auto">
-                    {/* Search + filtre */}
-                    <div className="mb-4 max-w-xl mx-auto flex items-center gap-2 flex-wrap justify-center">
-                        <div className="flex-1 min-w-50">
+                <main className="flex-1 p-4 pb-24 sm:p-6 sm:pb-24 md:pb-6 overflow-auto">
+                    {/* Container comun: căutarea, asignații și tabla pornesc de la aceeași margine stângă.
+                        Lățimea max = 3 coloane max-w-sm (24rem) + 2 gap-uri de 1rem, centrată pe ecrane mari. */}
+                    <div className="xl:max-w-[74rem] xl:mx-auto">
+                    {/* Toolbar: search + filtre, apoi asignații pe același rând (trec dedesubt dacă nu încap) */}
+                    <div className="mb-4 flex items-center gap-x-4 gap-y-3 flex-wrap">
+                    {/* mobil: căutarea pe tot rândul, dedesubt Status + Prioritate pe jumătăți egale */}
+                    <div className="w-full sm:w-auto sm:flex-1 sm:max-w-xl flex items-center gap-2 flex-wrap">
+                        <div className="basis-full sm:basis-auto flex-1 min-w-50">
                             <SearchInput value={search} onChange={setSearch} placeholder="Caută taskuri..." dark={dark} />
                         </div>
-                        <FilterDropdown value={statusFilter} onChange={setStatusFilter} options={STATUS_FILTER_OPTIONS} placeholder="Status" dark={dark} colorMap={STATUS_COLOR} />
-                        <FilterDropdown value={priorityFilter} onChange={setPriorityFilter} options={PRIORITY_FILTER_OPTIONS} placeholder="Prioritate" dark={dark} colorMap={PRIORITY_COLOR} />
+                        <FilterDropdown value={statusFilter} onChange={setStatusFilter} options={STATUS_FILTER_OPTIONS} placeholder="Status" dark={dark} colorMap={STATUS_COLOR} className="flex-1 sm:flex-none" />
+                        <FilterDropdown value={priorityFilter} onChange={setPriorityFilter} options={PRIORITY_FILTER_OPTIONS} placeholder="Prioritate" dark={dark} colorMap={PRIORITY_COLOR} className="flex-1 sm:flex-none" />
                     </div>
 
-                    {/* Assignees row */}
+                    {/* Asignați — mobil: un singur rând compact (rezumat care deschide pop-up-ul + Asignează) */}
                     {(assignees.length > 0 || isAdmin) && (
-                        <div className="mb-4 flex items-center gap-2 flex-wrap justify-center">
+                        <div className="flex sm:hidden items-center gap-2 w-full">
+                            {assignees.length > 0 && (
+                                <button onClick={() => setAssigneesOpen(true)}
+                                    title="Vezi toți utilizatorii și grupurile asignate"
+                                    className={`flex-1 min-w-0 h-9 flex items-center gap-2 px-3 rounded-lg border text-xs transition-colors cursor-pointer
+                                        ${dark ? "bg-[#2d2b52] border-[#3a3768] text-[#9b98c8]" : "bg-gray-50 border-gray-200 text-gray-600"}`}>
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                                    <span className={`font-semibold shrink-0 ${dark ? "text-white" : "text-gray-800"}`}>
+                                        {assignees.length} {assignees.length === 1 ? "asignat" : "asignați"}
+                                    </span>
+                                    <span className="truncate">· {assignees.map(a => a.name).join(", ")}</span>
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3 shrink-0 ml-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                                </button>
+                            )}
+                            {isAdmin && (
+                                <button onClick={() => setAssignSheetOpen(true)}
+                                    className={`${assignees.length > 0 ? "shrink-0" : "flex-1"} inline-flex items-center justify-center gap-1 h-9 px-3 rounded-lg text-xs font-semibold text-white shadow-sm transition-opacity hover:opacity-90 cursor-pointer`}
+                                    style={{ background: "linear-gradient(135deg, #524E91, #5AC4C2)" }}>
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                                    </svg>
+                                    Asignează
+                                </button>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Asignați — de la sm: chip-uri pe rândul toolbar-ului */}
+                    {(assignees.length > 0 || isAdmin) && (
+                        <div className="hidden sm:flex items-center gap-2 flex-wrap">
                             {assignees.length > 0 && (
                                 <span className={`text-xs font-medium shrink-0 ${dark ? "text-[#6b68a0]" : "text-gray-400"}`}>Asignați:</span>
                             )}
-                            {assignees.map(a => (
-                                <span key={`${a.type}-${a.id}`} className={`inline-flex items-center gap-1.5 text-xs pl-2.5 pr-1 py-0.5 rounded-full border font-medium
-                                    ${a.type === "user"
-                                        ? dark ? "bg-sky-400/10 text-sky-400 border-sky-400/30" : "bg-sky-50 text-sky-600 border-sky-200"
-                                        : dark ? "bg-violet-400/10 text-violet-400 border-violet-400/30" : "bg-violet-50 text-violet-600 border-violet-200"}
-                                    ${a.isOwner || !isAdmin ? "pr-2.5" : ""}`}>
-                                    {a.type === "user"
-                                        ? <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                                        : <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>}
-                                    {a.name}
-                                    {isAdmin && !a.isOwner && (
-                                        <button
-                                            onClick={() => setRemoveAssignTarget({ id: a.id, name: a.name, type: a.type })}
-                                            title={`Elimină ${a.name} din proiect`}
-                                            disabled={assignBusyKey === `remove-${a.id}`}
-                                            className={`shrink-0 flex items-center justify-center w-4 h-4 rounded-full transition-colors cursor-pointer disabled:opacity-40
-                                                ${dark ? "hover:bg-rose-400/20 hover:text-rose-400" : "hover:bg-rose-100 hover:text-rose-500"}`}>
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
-                                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                                            </svg>
-                                        </button>
-                                    )}
-                                </span>
-                            ))}
+                            {assignees.slice(0, ASSIGNEES_PREVIEW).map(a => renderAssigneeChip(a))}
+                            {assignees.length > ASSIGNEES_PREVIEW && (
+                                <button onClick={() => setAssigneesOpen(true)}
+                                    title="Vezi toți utilizatorii și grupurile asignate"
+                                    className={`inline-flex items-center gap-1 h-6 px-2.5 rounded-full text-xs font-semibold border transition-colors cursor-pointer
+                                        ${dark ? "bg-[#2d2b52] border-[#3a3768] text-[#9b98c8] hover:text-white hover:bg-[#3a3768]" : "bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200"}`}>
+                                    +{assignees.length - ASSIGNEES_PREVIEW} · Vizualizează tot
+                                </button>
+                            )}
                             {isAdmin && (
                                 <button onClick={() => setAssignSheetOpen(true)}
                                     className="inline-flex items-center gap-1 h-6 pl-1.5 pr-2.5 rounded-full text-xs font-semibold text-white shadow-sm transition-all duration-150 hover:opacity-90 hover:scale-105 cursor-pointer"
@@ -505,6 +583,35 @@ export default function ProjectDetailPage() {
                             )}
                         </div>
                     )}
+                    </div>
+
+                    {/* Pop-up — toți asignații proiectului, pe secțiuni */}
+                    <Dialog open={assigneesOpen} onOpenChange={setAssigneesOpen}>
+                        <DialogContent className={`sm:max-w-md ${dark ? "bg-[#1e1c3a] border-[#3a3768]" : ""}`}>
+                            <DialogHeader>
+                                <DialogTitle className={dark ? "text-white" : "text-gray-900"}>Asignați</DialogTitle>
+                                <DialogDescription className={`text-xs ${dark ? "text-[#9b98c8]" : "text-gray-400"}`}>
+                                    Toți utilizatorii și grupurile cu acces la <span className="font-semibold" style={{ color: "#524E91" }}>{project?.name}</span>.
+                                </DialogDescription>
+                            </DialogHeader>
+                            <div className="max-h-[60vh] overflow-y-auto space-y-4 -mx-1 px-1">
+                                {[
+                                    { label: "Utilizatori", items: assignedUsers },
+                                    { label: "Grupuri",     items: assignedGroups },
+                                ].filter(s => s.items.length > 0).map(section => (
+                                    <div key={section.label} className="space-y-2">
+                                        <p className={`text-[10px] uppercase tracking-widest font-semibold ${dark ? "text-[#6b68a0]" : "text-gray-400"}`}>
+                                            {section.label} <span className="tabular-nums">({section.items.length})</span>
+                                        </p>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {/* la eliminare închidem pop-up-ul, ca dialogul de confirmare să nu stea peste el */}
+                                            {section.items.map(a => renderAssigneeChip(a, () => setAssigneesOpen(false)))}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </DialogContent>
+                    </Dialog>
 
                     {/* Mobile column tabs */}
                     <div className={`flex md:hidden rounded-xl overflow-hidden border mb-4 ${dark ? "border-[#3a3768]" : "border-gray-200"}`}>
@@ -525,19 +632,19 @@ export default function ProjectDetailPage() {
                         })}
                     </div>
 
-                    <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+                    <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
                         <div className="md:hidden">
                             {COLUMNS.filter(col => col.id === mobileCol).map(col => (
                                 <KanbanColumn key={col.id} col={col} tasks={filteredTasks} dark={dark}
-                                    onDelete={taskId => setDeleteTaskId(taskId)} onEdit={openEditTask} onTaskClick={taskId => navigate(`/tasks/${taskId}`)}
+                                    onDelete={taskId => setDeleteTaskId(taskId)} onEdit={openEditTask} onTaskClick={handleTaskClick}
                                     activeId={activeId} canDelete={canDelete} canModify={canModify} projectName={project?.name}
                                     isFavorite={isFavorite} toggleFavorite={toggleFavorite} />
                             ))}
                         </div>
-                        <div className="hidden md:flex gap-4 items-start pb-4 justify-start xl:justify-center">
+                        <div className="hidden md:flex gap-4 items-start pb-4 justify-start">
                             {COLUMNS.map(col => (
                                 <KanbanColumn key={col.id} col={col} tasks={filteredTasks} dark={dark}
-                                    onDelete={taskId => setDeleteTaskId(taskId)} onEdit={openEditTask} onTaskClick={taskId => navigate(`/tasks/${taskId}`)}
+                                    onDelete={taskId => setDeleteTaskId(taskId)} onEdit={openEditTask} onTaskClick={handleTaskClick}
                                     activeId={activeId} canDelete={canDelete} canModify={canModify} projectName={project?.name}
                                     isFavorite={isFavorite} toggleFavorite={toggleFavorite} />
                             ))}
@@ -557,13 +664,14 @@ export default function ProjectDetailPage() {
                             )}
                         </DragOverlay>
                     </DndContext>
+                    </div>
                 </main>
             </div>
 
             {/* FAB — task nou, vizibil doar pentru Modificare (≥2) și Ștergere (≥3) */}
             {canModify && (
                 <button onClick={() => setSheetOpen(true)} title="Task nou"
-                    className="fixed bottom-6 right-6 w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center transition-all duration-150 hover:scale-105 cursor-pointer z-50 hover:opacity-90"
+                    className={`fixed bottom-6 right-6 w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center transition-all duration-150 hover:scale-105 cursor-pointer z-50 hover:opacity-90 ${sidebarOpen ? "max-md:hidden" : ""}`}
                     style={{ background: "linear-gradient(135deg, #524E91, #5AC4C2)", boxShadow: "0 4px 20px rgba(82,78,145,0.4)" }}>
                     <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                         <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -592,11 +700,7 @@ export default function ProjectDetailPage() {
                         </div>
                         <div className="space-y-1.5">
                             <Label className={labelCls}>Prioritate</Label>
-                            <select value={form.priority} onChange={e => setForm(f => ({ ...f, priority: parseInt(e.target.value, 10) }))} className={selectCls}>
-                                <option value={0}>Low</option>
-                                <option value={1}>Medium</option>
-                                <option value={2}>High</option>
-                            </select>
+                            <PrioritySelect value={form.priority} onChange={priority => setForm(f => ({ ...f, priority }))} dark={dark} />
                         </div>
                         <div className="space-y-1.5">
                             <Label className={labelCls}>Termen limită</Label>
@@ -652,11 +756,7 @@ export default function ProjectDetailPage() {
                         </div>
                         <div className="space-y-1.5">
                             <Label className={labelCls}>Prioritate</Label>
-                            <select value={editForm.priority} onChange={e => setEditForm(f => ({ ...f, priority: parseInt(e.target.value, 10) }))} className={selectCls}>
-                                <option value={0}>Low</option>
-                                <option value={1}>Medium</option>
-                                <option value={2}>High</option>
-                            </select>
+                            <PrioritySelect value={editForm.priority} onChange={priority => setEditForm(f => ({ ...f, priority }))} dark={dark} />
                         </div>
                         <div className="space-y-1.5">
                             <Label className={labelCls}>Termen limită</Label>
@@ -847,6 +947,19 @@ export default function ProjectDetailPage() {
                     <AlertDialogFooter>
                         <AlertDialogCancel onClick={() => setDuplicateTaskName(null)} className={dark ? "border-[#3a3768] text-[#9b98c8] hover:bg-[#2d2b52]" : ""}>Anulează</AlertDialogCancel>
                         <AlertDialogAction onClick={() => { setDuplicateTaskName(null); doCreate(); }} className="text-white hover:opacity-90" style={{ background: "#524E91" }}>Adaugă oricum</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            <AlertDialog open={!!duplicateEditTaskName} onOpenChange={open => !open && setDuplicateEditTaskName(null)}>
+                <AlertDialogContent className={dark ? "bg-[#1e1c3a] border-[#3a3768]" : ""}>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle className={dark ? "text-white" : ""}>Task cu același nume</AlertDialogTitle>
+                        <AlertDialogDescription>Există deja un task numit „{duplicateEditTaskName}" în acest proiect. Vrei să salvezi oricum?</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel onClick={() => setDuplicateEditTaskName(null)} className={dark ? "border-[#3a3768] text-[#9b98c8] hover:bg-[#2d2b52]" : ""}>Anulează</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => { setDuplicateEditTaskName(null); doEditSave(); }} className="text-white hover:opacity-90" style={{ background: "#524E91" }}>Salvează oricum</AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>

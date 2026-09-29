@@ -1,7 +1,9 @@
 /**
  * k6 Stress Test — TaskFlow API
- * Run: k6 run load-test.js
- * Run cu JSON: k6 run --summary-export=k6-summary.json load-test.js
+ * Run:        k6 run -e PROFILE=smoke taskflow-stress.js   (smoke | load | stress, default stress)
+ * Via Docker: docker run --rm -v "${PWD}:/scripts" -w /scripts grafana/k6 run
+ *               -e BASE_URL=http://host.docker.internal:5179 -e PROFILE=load taskflow-stress.js
+ * Rezultatul JSON se scrie în k6-summary.json (vezi handleSummary).
  */
 
 import http from 'k6/http';
@@ -12,8 +14,9 @@ import { randomString, randomIntBetween } from 'https://jslib.k6.io/k6-utils/1.4
 // ─── Config ───────────────────────────────────────────────────────────────────
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:5179';
 
-const PRIORITIES = ['Low', 'Medium', 'High'];
-const STATUSES   = ['Todo', 'InProgress', 'Done'];
+// API-ul nu are JsonStringEnumConverter → enum-urile se trimit ca int
+const PRIORITIES = [0, 1, 2]; // Low, Medium, High
+const STATUSES   = [0, 1, 2]; // Todo, InProgress, Done
 
 // ─── Metrici custom ───────────────────────────────────────────────────────────
 const authErrors    = new Counter('auth_errors');
@@ -24,15 +27,32 @@ const projectCreateDuration = new Trend('project_create_duration', true);
 const taskCreateDuration    = new Trend('task_create_duration', true);
 
 // ─── Options ──────────────────────────────────────────────────────────────────
+const PROFILES = {
+  // 1 VU, o singură iterație — verifică doar că fluxul merge cap-coadă
+  smoke: { vus: 1, iterations: 1 },
+  // sarcină moderată, constantă
+  load: {
+    stages: [
+      { duration: '30s', target: 20 },
+      { duration: '1m',  target: 20 },
+      { duration: '15s', target: 0  },
+    ],
+  },
+  stress: {
+    stages: [
+      { duration: '20s', target: 50  },  // warm-up gradual
+      { duration: '30s', target: 200 },  // urcare la sarcina medie
+      { duration: '30s', target: 500 },  // spike la maxim
+      { duration: '30s', target: 500 },  // menține spike
+      { duration: '20s', target: 50  },  // drop gradual
+      { duration: '20s', target: 0   },  // recuperare completă
+    ],
+  },
+};
+const PROFILE = __ENV.PROFILE || 'stress';
+
 export const options = {
-  stages: [
-    { duration: '20s', target: 50  },  // warm-up gradual
-    { duration: '30s', target: 200 },  // urcare la sarcina medie
-    { duration: '30s', target: 500 },  // spike la maxim
-    { duration: '30s', target: 500 },  // menține spike
-    { duration: '20s', target: 50  },  // drop gradual
-    { duration: '20s', target: 0   },  // recuperare completă
-  ],
+  ...PROFILES[PROFILE],
   thresholds: {
     // stress test — praguri realiste, nu aborta la primul eșec
     'api_error_rate':    [{ threshold: 'rate<0.15', abortOnFail: false }],
@@ -59,6 +79,7 @@ function assertOk(res, label) {
   const ok = res.status >= 200 && res.status < 300;
   apiErrorRate.add(ok ? 0 : 1);
   check(res, { [`${label} → 2xx`]: () => ok });
+  if (!ok && __ENV.DEBUG) console.warn(`${label} → ${res.status}: ${String(res.body).slice(0, 300)}`);
   return ok;
 }
 
@@ -154,7 +175,7 @@ export default function () {
         title:       `Task k6 ${uid}`,
         description: 'Task generat de stress test',
         priority:    PRIORITIES[randomIntBetween(0, 2)],
-        status:      'Todo',
+        status:      STATUSES[0],
         projectId,
         dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       }),
@@ -174,13 +195,20 @@ export default function () {
     assertOk(http.put(
       `${BASE_URL}/api/tasks/${taskId}`,
       JSON.stringify({
-        title:     `Task k6 ${uid} (upd)`,
-        priority:  PRIORITIES[randomIntBetween(0, 2)],
-        status:    STATUSES[randomIntBetween(0, 2)],
-        projectId,
+        title:    `Task k6 ${uid} (upd)`,
+        priority: PRIORITIES[randomIntBetween(0, 2)],
       }),
       headers(token),
     ), 'PUT task');
+
+    // statusul are endpoint separat
+    assertOk(http.patch(
+      `${BASE_URL}/api/tasks/${taskId}/status`,
+      JSON.stringify({ status: STATUSES[randomIntBetween(0, 2)] }),
+      headers(token),
+    ), 'PATCH task status');
+
+    assertOk(http.get(`${BASE_URL}/api/projects/${projectId}/tasks`, headers(token)), 'GET project tasks');
   });
 
   sleep(0.5);
@@ -220,11 +248,19 @@ export default function () {
     group('Comments', () => {
       assertOk(http.post(
         `${BASE_URL}/api/tasks/${taskId}/comments`,
-        JSON.stringify({ content: `Comentariu k6 ${new Date().toISOString()}` }),
+        JSON.stringify({ text: `Comentariu k6 ${new Date().toISOString()}` }),
         headers(token),
       ), 'POST comment');
     });
   }
+
+  // ── 6. Cleanup ────────────────────────────────────────────────────────────────
+  // proiectul se șterge cu cascade (task-uri, comentarii); userul și tag-ul rămân
+  group('Cleanup', () => {
+    const delRes = http.del(`${BASE_URL}/api/projects/${projectId}`, null, headers(token));
+    check(delRes, { 'DELETE project → 204': (r) => r.status === 204 });
+    apiErrorRate.add(delRes.status === 204 ? 0 : 1);
+  });
 
   sleep(randomIntBetween(1, 3));
 }

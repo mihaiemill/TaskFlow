@@ -7,6 +7,7 @@ namespace taskflow.Controllers;
 
 [Authorize]
 [ApiController]
+[ForbidOnUnauthorizedAccess]
 public class TasksController(ITaskService taskService) : ControllerBase
 {
     private Guid CurrentUserId =>
@@ -31,6 +32,7 @@ public class TasksController(ITaskService taskService) : ControllerBase
     public async Task<IActionResult> Create(CreateTaskDto dto)
     {
         var task = await taskService.CreateAsync(dto, CurrentUserId);
+        if (task is null) return NotFound();
         return CreatedAtAction(nameof(GetById), new { id = task.Id }, task);
     }
 
@@ -88,5 +90,37 @@ public class TasksController(ITaskService taskService) : ControllerBase
         var comment = await taskService.AddCommentAsync(taskId, dto, CurrentUserId);
         if (comment is null) return NotFound();
         return Ok(comment);
+    }
+
+    [HttpGet("api/tasks/{taskId}/images/{imageId}")]
+    public async Task<IActionResult> GetImage(Guid taskId, Guid imageId)
+    {
+        var image = await taskService.GetImageAsync(taskId, imageId, CurrentUserId);
+        if (image is null) return NotFound();
+        return PhysicalFile(image.Value.Path, image.Value.ContentType);
+    }
+
+    [HttpPost("api/tasks/{taskId}/images")]
+    [RequestSizeLimit(TaskService.MaxImageSize + 64 * 1024)]
+    public async Task<IActionResult> UploadImage(Guid taskId, IFormFile file)
+    {
+        try
+        {
+            var image = await taskService.AddImageAsync(taskId, file, CurrentUserId);
+            if (image is null) return NotFound();
+            return Ok(image);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpDelete("api/tasks/{taskId}/images/{imageId}")]
+    public async Task<IActionResult> DeleteImage(Guid taskId, Guid imageId)
+    {
+        var result = await taskService.RemoveImageAsync(taskId, imageId, CurrentUserId);
+        if (!result) return NotFound();
+        return NoContent();
     }
 }

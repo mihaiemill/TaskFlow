@@ -57,6 +57,34 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!))
         };
+        opt.Events = new JwtBearerEvents
+        {
+            // La fiecare request: un token valid nu mai ajunge dacă între timp contul a fost
+            // dezactivat sau șters — sesiunile deschise se închid imediat, nu la expirarea token-ului.
+            OnTokenValidated = async ctx =>
+            {
+                var sub = ctx.Principal?.FindFirst("sub")?.Value;
+                if (!Guid.TryParse(sub, out var userId)) { ctx.Fail("Token invalid."); return; }
+
+                var db = ctx.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
+                var isActive = await AccountStatus.IsActiveAsync(db, userId);
+
+                if (isActive is null) { ctx.Fail("Utilizator inexistent."); return; }
+                if (isActive == false)
+                {
+                    ctx.HttpContext.Items["account_inactive"] = true;
+                    ctx.Fail("Cont inactiv.");
+                }
+            },
+            // 401 cu cod dedicat, ca frontend-ul să poată afișa alerta „Cont inactiv”
+            OnChallenge = async ctx =>
+            {
+                if (!ctx.HttpContext.Items.ContainsKey("account_inactive")) return;
+                ctx.HandleResponse();
+                ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await ctx.Response.WriteAsJsonAsync(new { code = "account_inactive", error = "Contul este inactiv." });
+            },
+        };
     });
 
 builder.Services.AddAuthorization();
@@ -85,6 +113,14 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
+
+    // Contul de admin nu se poate crea prin /register — îl creăm aici, o singură dată, pe o bază nouă
+    var seed = await AdminAccess.EnsureAdminAsync(db, builder.Configuration["Admin:InitialPassword"]);
+    var startupLog = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    if (seed == AdminAccess.SeedResult.Created)
+        startupLog.LogInformation("Contul de admin {Email} a fost creat.", AdminAccess.AdminEmail);
+    else if (seed == AdminAccess.SeedResult.MissingPassword)
+        startupLog.LogWarning("Nu există cont de admin și Admin:InitialPassword nu e setat (minim 6 caractere) — adminul nu a fost creat.");
 }
 
 if (app.Environment.IsDevelopment())

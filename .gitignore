@@ -3,6 +3,7 @@ bin/
 obj/
 node_modules/
 dist/
+uploads/
 
 # Secrete — vezi .env.example pentru șablon
 .env

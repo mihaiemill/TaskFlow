@@ -54,8 +54,26 @@ export function FavoritesProvider({ children }) {
         });
     }, [userId]);
 
+    // Actualizeaza campurile "cache-uite" ale unui favorit deja existent (ex. numele, dupa o redenumire),
+    // fara sa il adauge daca nu e deja favorit. Nu scrie in localStorage daca nimic nu s-a schimbat.
+    const updateFavorite = useCallback((type, id, patch) => {
+        setFavorites(prev => {
+            const idx = prev.findIndex(f => f.type === type && String(f.id) === String(id));
+            if (idx === -1) return prev;
+
+            const current = prev[idx];
+            const changed = Object.keys(patch).some(k => current[k] !== patch[k]);
+            if (!changed) return prev;
+
+            const next = [...prev];
+            next[idx] = { ...current, ...patch };
+            localStorage.setItem(`favorites_v1_${userId}`, JSON.stringify(next));
+            return next;
+        });
+    }, [userId]);
+
     return (
-        <FavoritesContext.Provider value={{ favorites, isFavorite, toggleFavorite, removeFavorite }}>
+        <FavoritesContext.Provider value={{ favorites, isFavorite, toggleFavorite, removeFavorite, updateFavorite }}>
             {children}
         </FavoritesContext.Provider>
     );

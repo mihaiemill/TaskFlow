@@ -165,6 +165,33 @@ namespace taskflow.Migrations
                     b.ToTable("Tags");
                 });
 
+            modelBuilder.Entity("taskflow.Models.TaskImage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp without time zone");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("TaskItemId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TaskItemId");
+
+                    b.ToTable("TaskImages");
+                });
+
             modelBuilder.Entity("taskflow.Models.TaskItem", b =>
                 {
                     b.Property<Guid>("Id")
@@ -230,6 +257,10 @@ namespace taskflow.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
+
+                    b.Property<string>("Avatar")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp without time zone");
@@ -333,6 +364,17 @@ namespace taskflow.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("taskflow.Models.TaskImage", b =>
+                {
+                    b.HasOne("taskflow.Models.TaskItem", "TaskItem")
+                        .WithMany("Images")
+                        .HasForeignKey("TaskItemId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("TaskItem");
+                });
+
             modelBuilder.Entity("taskflow.Models.TaskItem", b =>
                 {
                     b.HasOne("taskflow.Models.User", "Assignee")
@@ -388,6 +430,8 @@ namespace taskflow.Migrations
             modelBuilder.Entity("taskflow.Models.TaskItem", b =>
                 {
                     b.Navigation("Comments");
+
+                    b.Navigation("Images");
 
                     b.Navigation("TaskTags");
                 });

@@ -13,6 +13,33 @@
     }
 }
 
+@keyframes page-out {
+    to { opacity: 0; }
+}
+@keyframes page-in {
+    from { opacity: 0; transform: translateY(6px); }
+}
+
+::view-transition-old(root) {
+    animation: 90ms ease-out both page-out;
+}
+::view-transition-new(root) {
+    animation: 180ms cubic-bezier(0.22, 1, 0.36, 1) both page-in;
+}
+::view-transition-group(sidebar),
+::view-transition-group(topbar) {
+    animation-duration: 180ms;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    ::view-transition-group(*),
+    ::view-transition-old(*),
+    ::view-transition-new(*) {
+        animation: none !important;
+    }
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

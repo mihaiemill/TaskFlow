@@ -10,6 +10,7 @@ import { Input } from "../components/ui/input.jsx";
 import { Label } from "../components/ui/label.jsx";
 import { Card, CardContent } from "../components/ui/card.jsx";
 import { useFavorites } from "../context/FavoritesContext.jsx";
+import { useProjects } from "../context/ProjectsContext.jsx";
 import {
     Sheet, SheetContent, SheetHeader, SheetTitle,
     SheetDescription, SheetFooter,
@@ -21,7 +22,7 @@ import {
 } from "../components/ui/alert-dialog.jsx";
 
 export default function ProjectsPage() {
-    const [projects, setProjects] = useState([]);
+    const { projects, setProjects, refreshProjects } = useProjects();
     const { sidebarOpen } = useSidebarState();
 
     // Create
@@ -39,11 +40,16 @@ export default function ProjectsPage() {
     const [deleteProjectId, setDeleteProjectId] = useState(null);
 
     const { dark } = useTheme();
-    const { isFavorite, toggleFavorite, removeFavorite } = useFavorites();
+    const { isFavorite, toggleFavorite, removeFavorite, updateFavorite } = useFavorites();
 
     useEffect(() => {
-        api.get("/projects").then(r => setProjects(r.data));
-    }, []);
+        refreshProjects();
+    }, [refreshProjects]);
+
+    // Tine la zi numele proiectelor in favorite, oriunde ar fi fost redenumite
+    useEffect(() => {
+        projects.forEach(p => updateFavorite("project", p.id, { name: p.name, color: p.color }));
+    }, [projects, updateFavorite]);
 
     const resetForm = () => setForm({ name: "", description: "", color: "#524E91" });
 
@@ -117,7 +123,7 @@ export default function ProjectsPage() {
                     breadcrumbs={[{ label: "Proiectele mele" }]}
                 />
 
-                <main className="flex-1 p-4 sm:p-7 overflow-y-auto">
+                <main className="flex-1 p-4 pb-24 sm:p-7 sm:pb-24 md:pb-7 overflow-y-auto">
                     {projects.length === 0 && (
                         <div className="flex flex-col items-center justify-center pt-20 text-center">
                             <div className={`w-12 h-12 rounded-xl flex items-center justify-center mb-4 ${dark ? "bg-[#2d2b52]" : "bg-[#524E91]/10"}`}>
@@ -215,7 +221,7 @@ export default function ProjectsPage() {
             <button
                 onClick={() => setSheetOpen(true)}
                 title="Proiect nou"
-                className="fixed bottom-6 right-6 w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center transition-all duration-150 hover:scale-105 cursor-pointer z-50 hover:opacity-90"
+                className={`fixed bottom-6 right-6 w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center transition-all duration-150 hover:scale-105 cursor-pointer z-50 hover:opacity-90 ${sidebarOpen ? "max-md:hidden" : ""}`}
                 style={{ background: "linear-gradient(135deg, #524E91, #5AC4C2)", boxShadow: "0 4px 20px rgba(82,78,145,0.4)" }}
             >
                 <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

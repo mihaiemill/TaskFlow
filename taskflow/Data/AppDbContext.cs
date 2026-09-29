@@ -11,6 +11,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Tag> Tags => Set<Tag>();
     public DbSet<TaskTag> TaskTags => Set<TaskTag>();
     public DbSet<Comment> Comments => Set<Comment>();
+    public DbSet<TaskImage> TaskImages => Set<TaskImage>();
     public DbSet<Group> Groups => Set<Group>();
     public DbSet<GroupUser> GroupUsers => Set<GroupUser>();
     public DbSet<ProjectAssignment> ProjectAssignments => Set<ProjectAssignment>();  
@@ -42,6 +43,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         mb.Entity<User>()
             .HasIndex(u => u.Email).IsUnique();
+
+        mb.Entity<User>()
+            .Property(u => u.Avatar).HasMaxLength(AvatarCatalog.MaxKeyLength);
 
         mb.Entity<Tag>()
             .HasIndex(t => t.Name).IsUnique();
@@ -88,6 +92,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasOne(c => c.TaskItem)
             .WithMany(t => t.Comments)
             .HasForeignKey(c => c.TaskItemId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<TaskImage>()
+            .HasOne(i => i.TaskItem)
+            .WithMany(t => t.Images)
+            .HasForeignKey(i => i.TaskItemId)
             .OnDelete(DeleteBehavior.Cascade);
 
         // ── Groups ────────────────────────────────────────────────────────────

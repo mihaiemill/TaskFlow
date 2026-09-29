@@ -3,7 +3,7 @@ import { Topbar } from "../components/ui/Topbar.jsx";
 import { Sidebar } from "../components/ui/Sidebar.jsx";
 import { useTheme } from "../context/ThemeContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { useProjects } from "../context/ProjectsContext.jsx";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -13,17 +13,10 @@ import {
     SheetDescription, SheetFooter,
 } from "@/components/ui/sheet";
 import { apiFetch, SearchInput } from "../components/admin/shared.jsx";
+import { UserAvatar, AvatarPicker } from "../components/UserAvatar.jsx";
+import { AvatarDialog } from "../components/AvatarDialog.jsx";
 
 // ── UI helpers locale ────────────────────────────────────────────────────────
-
-function Avatar({ name, dark }) {
-    return (
-        <div className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold"
-            style={{ background: "linear-gradient(135deg, #524E91, #5AC4C2)" }}>
-            {name?.charAt(0)?.toUpperCase() ?? "?"}
-        </div>
-    );
-}
 
 function MethodBadge({ hasPassword, isGoogleLinked, dark }) {
     if (hasPassword && isGoogleLinked) {
@@ -59,24 +52,27 @@ function ActiveToggle({ active, onChange, disabled, dark }) {
 
 export default function AdminUsersPage() {
     const { dark } = useTheme();
-    const { token } = useAuth();
+    const { token, setAvatar } = useAuth();
 
-    const [projects,     setProjects]     = useState([]);
+    const { projects, refreshProjects } = useProjects();
     const [users,        setUsers]        = useState([]);
     const [usersLoading, setUsersLoading] = useState(true);
     const [search,       setSearch]       = useState("");
 
     // ── sheet: creare user ────────────────────────────────────────────────────
     const [sheetOpen,   setSheetOpen]   = useState(false);
-    const [form,        setForm]        = useState({ fullName: "", email: "", password: "" });
+    const [form,        setForm]        = useState({ fullName: "", email: "", password: "", avatar: null });
     const [creating,    setCreating]    = useState(false);
     const [createError, setCreateError] = useState("");
 
-    // ── dialog: schimbare parola ──────────────────────────────────────────────
-    const [passwordTarget, setPasswordTarget] = useState(null);
-    const [newPassword,    setNewPassword]    = useState("");
-    const [passwordSaving, setPasswordSaving] = useState(false);
-    const [passwordError,  setPasswordError]  = useState("");
+    // ── dialog: editare utilizator (nume si/sau parola, independente) ─────────
+    const [editTarget,  setEditTarget]  = useState(null);
+    const [editName,    setEditName]    = useState("");
+    const [newPassword, setNewPassword] = useState("");
+    const [editSaving,  setEditSaving]  = useState(false);
+    const [editError,   setEditError]   = useState("");
+
+    const [avatarTarget, setAvatarTarget] = useState(null);
 
     // ── alert dialog: stergere user ───────────────────────────────────────────
     const [deleteTarget,      setDeleteTarget]      = useState(null);
@@ -86,8 +82,7 @@ export default function AdminUsersPage() {
     useEffect(() => {
         if (!token) return;
         loadUsers();
-        fetch("/api/projects", { headers: { Authorization:`Bearer ${token}` } })
-            .then(r => r.ok ? r.json() : Promise.reject()).then(setProjects).catch(console.error);
+        refreshProjects();
     }, [token]);
 
     function loadUsers() {
@@ -97,7 +92,7 @@ export default function AdminUsersPage() {
             .finally(() => setUsersLoading(false));
     }
 
-    function resetForm() { setForm({ fullName: "", email: "", password: "" }); setCreateError(""); }
+    function resetForm() { setForm({ fullName: "", email: "", password: "", avatar: null }); setCreateError(""); }
 
     async function handleCreateUser() {
         if (!form.fullName.trim() || !form.email.trim() || !form.password) {
@@ -112,7 +107,7 @@ export default function AdminUsersPage() {
         try {
             const r = await apiFetch("/api/admin/users", token, {
                 method: "POST",
-                body: JSON.stringify({ fullName: form.fullName.trim(), email: form.email.trim(), password: form.password }),
+                body: JSON.stringify({ fullName: form.fullName.trim(), email: form.email.trim(), password: form.password, avatar: form.avatar }),
             });
             if (!r.ok) { const e = await r.json().catch(() => ({})); setCreateError(e.error ?? "Eroare la creare."); return; }
             const newUser = await r.json();
@@ -136,23 +131,60 @@ export default function AdminUsersPage() {
         }
     }
 
-    function openPasswordDialog(user) {
-        setPasswordTarget(user); setNewPassword(""); setPasswordError("");
+    function openEditDialog(user) {
+        setEditTarget(user); setEditName(user.fullName); setNewPassword(""); setEditError("");
     }
 
-    async function handleChangePassword() {
-        if (!passwordTarget) return;
-        if (newPassword.length < 6) { setPasswordError("Parola trebuie să aibă cel puțin 6 caractere."); return; }
-        setPasswordSaving(true); setPasswordError("");
+    // Numele și parola se salvează separat: se trimite doar ce s-a modificat.
+    async function handleSaveEdit() {
+        if (!editTarget) return;
+        const trimmedName   = editName.trim();
+        const nameChanged   = trimmedName !== editTarget.fullName;
+        const passwordGiven = editTarget.hasPassword && newPassword !== "";
+
+        if (nameChanged && !trimmedName) { setEditError("Numele nu poate fi gol."); return; }
+        if (passwordGiven && newPassword.length < 6) { setEditError("Parola trebuie să aibă cel puțin 6 caractere."); return; }
+        if (!nameChanged && !passwordGiven) { setEditError("Nu ai modificat nimic."); return; }
+
+        setEditSaving(true); setEditError("");
         try {
-            const r = await apiFetch(`/api/admin/users/${passwordTarget.id}/password`, token, {
-                method: "PATCH",
-                body: JSON.stringify({ newPassword }),
-            });
-            if (!r.ok) { const e = await r.json().catch(() => ({})); setPasswordError(e.error ?? "Eroare la salvare."); return; }
-            setPasswordTarget(null); setNewPassword("");
-        } catch { setPasswordError("Eroare de rețea."); }
-        finally { setPasswordSaving(false); }
+            if (nameChanged) {
+                const r = await apiFetch(`/api/admin/users/${editTarget.id}/name`, token, {
+                    method: "PATCH",
+                    body: JSON.stringify({ fullName: trimmedName }),
+                });
+                if (!r.ok) { const e = await r.json().catch(() => ({})); setEditError(e.error ?? "Eroare la salvarea numelui."); return; }
+                const { fullName } = await r.json();
+                setUsers(prev => prev.map(u => u.id === editTarget.id ? { ...u, fullName } : u)
+                    .sort((a, b) => a.fullName.localeCompare(b.fullName)));
+                setEditTarget(t => ({ ...t, fullName }));
+            }
+            if (passwordGiven) {
+                const r = await apiFetch(`/api/admin/users/${editTarget.id}/password`, token, {
+                    method: "PATCH",
+                    body: JSON.stringify({ newPassword }),
+                });
+                if (!r.ok) {
+                    const e = await r.json().catch(() => ({}));
+                    setEditError((nameChanged ? "Numele a fost salvat, dar parola nu: " : "") + (e.error ?? "Eroare la salvarea parolei."));
+                    return;
+                }
+            }
+            setEditTarget(null); setNewPassword("");
+        } catch { setEditError("Eroare de rețea."); }
+        finally { setEditSaving(false); }
+    }
+
+    async function handleSaveAvatar(key) {
+        const target = avatarTarget;
+        const r = await apiFetch(`/api/admin/users/${target.id}/avatar`, token, {
+            method: "PATCH",
+            body: JSON.stringify({ avatar: key }),
+        });
+        if (!r.ok) { const e = await r.json().catch(() => ({})); return e.error ?? "Eroare la salvare."; }
+        setUsers(prev => prev.map(u => u.id === target.id ? { ...u, avatar: key } : u));
+        if (target.isSelf) setAvatar(key);
+        return null;
     }
 
     function openDeleteDialog(user) {
@@ -209,31 +241,34 @@ export default function AdminUsersPage() {
         <div className={`flex h-screen overflow-hidden ${dark ? "bg-[#16152e]" : "bg-gray-50"}`}>
             <Sidebar projects={projects} />
             <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-                <Topbar breadcrumbs={[{ label:"Utilizatori" }]} />
+                <Topbar breadcrumbs={[{ label:"Proiecte", to:"/projects" }, { label:"Utilizatori" }]} />
 
-                <main className={`flex-1 overflow-y-auto p-6 sm:p-8 ${dark ? "text-white" : "text-gray-900"}`}>
+                <main className={`flex-1 overflow-y-auto overflow-x-hidden p-6 sm:p-8 ${dark ? "text-white" : "text-gray-900"}`}>
                     <style>{`@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap');`}</style>
 
                     <div className="max-w-6xl mx-auto">
 
                         {/* header */}
-                        <div className="mb-7 flex items-center gap-3">
-                            <div className="w-1 h-9 rounded-full shrink-0" style={{background:"linear-gradient(180deg,#524E91,#5AC4C2)"}}/>
-                            <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2.5">
-                                    <h1 className={`text-2xl font-bold leading-tight ${dark?"text-white":"text-gray-900"}`} style={{fontFamily:"'Space Grotesk',sans-serif"}}>
-                                        Utilizatori
-                                    </h1>
-                                    {!usersLoading && users.length > 0 && (
-                                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${dark ? "bg-[#2d2b52] text-[#9b98c8]" : "bg-gray-100 text-gray-500"}`}>
-                                            {users.length}
-                                        </span>
-                                    )}
+                        {/* pe mobil: titlu + descriere, apoi butonul pe toată lățimea; de la sm: pe un rând */}
+                        <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-3">
+                            <div className="flex items-stretch gap-3 flex-1 min-w-0">
+                                <div className="w-1 rounded-full shrink-0" style={{background:"linear-gradient(180deg,#524E91,#5AC4C2)"}}/>
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2.5">
+                                        <h1 className={`text-xl sm:text-2xl font-bold leading-tight truncate ${dark?"text-white":"text-gray-900"}`} style={{fontFamily:"'Space Grotesk',sans-serif"}}>
+                                            Utilizatori
+                                        </h1>
+                                        {!usersLoading && users.length > 0 && (
+                                            <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${dark ? "bg-[#2d2b52] text-[#9b98c8]" : "bg-gray-100 text-gray-500"}`}>
+                                                {users.length}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className={`text-xs mt-1 ${dark?"text-[#6b68a0]":"text-gray-400"}`}>Gestionează conturile — creează, dezactivează sau șterge utilizatori</p>
                                 </div>
-                                <p className={`text-xs mt-1 ${dark?"text-[#6b68a0]":"text-gray-400"}`}>Gestionează conturile — creează, dezactivează vizual sau șterge utilizatori</p>
                             </div>
                             <button onClick={() => setSheetOpen(true)}
-                                className="shrink-0 inline-flex items-center gap-1.5 h-9 px-4 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90 cursor-pointer"
+                                className="shrink-0 w-full sm:w-auto inline-flex items-center justify-center gap-1.5 h-10 sm:h-9 px-4 rounded-lg text-xs font-semibold text-white transition-all hover:opacity-90 cursor-pointer"
                                 style={{background:"linear-gradient(135deg,#524E91,#5AC4C2)"}}>
                                 <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -260,11 +295,11 @@ export default function AdminUsersPage() {
                         </div>
 
                         {/* ── Tabel utilizatori ── */}
-                        <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
+                        <div className={`rounded-2xl border ${cardBg}`}>
                             <div className="px-5 pt-4 pb-1">
                                 <SearchInput value={search} onChange={setSearch} placeholder="Caută după nume sau email..." dark={dark}/>
                             </div>
-                            <ScrollArea className="h-125 mt-2">
+                            <div className="h-125 mt-2 overflow-y-auto overflow-x-hidden">
                                 <div className="px-3 pb-3">
                                     {usersLoading ? (
                                         <div className="flex items-center justify-center py-16">
@@ -290,7 +325,10 @@ export default function AdminUsersPage() {
                                                             <TableCell className={`${th} text-xs`}>{i+1}</TableCell>
                                                             <TableCell>
                                                                 <div className="flex items-center gap-2.5">
-                                                                    <Avatar name={u.fullName} dark={dark}/>
+                                                                    <button type="button" onClick={() => setAvatarTarget(u)} title="Schimbă avatarul"
+                                                                        className="shrink-0 rounded-full cursor-pointer transition-transform duration-150 hover:scale-110">
+                                                                        <UserAvatar avatar={u.avatar} name={u.fullName} className="size-8 text-lg" title="Schimbă avatarul"/>
+                                                                    </button>
                                                                     <div className="min-w-0">
                                                                         <p className="font-medium truncate">{u.fullName}</p>
                                                                         <p className={`text-xs truncate ${th}`}>{u.email}</p>
@@ -306,20 +344,18 @@ export default function AdminUsersPage() {
                                                             </TableCell>
                                                             <TableCell>
                                                                 <div className="flex items-center justify-end gap-1">
-                                                                    {u.hasPassword ? (
-                                                                        <button onClick={() => openPasswordDialog(u)} title="Schimbă parola"
-                                                                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${dark?"text-[#6b68a0] hover:text-white hover:bg-[#524E91]/20":"text-gray-400 hover:text-[#524E91] hover:bg-[#524E91]/10"}`}>
-                                                                            <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                                                <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                                                                            </svg>
-                                                                        </button>
-                                                                    ) : (
-                                                                        <span title="Cont Google — nu are parolă de schimbat" className={`p-1.5 ${dark?"text-[#3a3768]":"text-gray-200"}`}>
-                                                                            <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                                                <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                                                                            </svg>
-                                                                        </span>
-                                                                    )}
+                                                                    <button onClick={() => setAvatarTarget(u)} title="Schimbă avatarul"
+                                                                        className={`p-1.5 rounded-md transition-colors cursor-pointer ${dark?"text-[#6b68a0] hover:text-white hover:bg-[#524E91]/20":"text-gray-400 hover:text-[#524E91] hover:bg-[#524E91]/10"}`}>
+                                                                        <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                                            <circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>
+                                                                        </svg>
+                                                                    </button>
+                                                                    <button onClick={() => openEditDialog(u)} title={u.hasPassword ? "Editează numele sau parola" : "Editează numele"}
+                                                                        className={`p-1.5 rounded-md transition-colors cursor-pointer ${dark?"text-[#6b68a0] hover:text-white hover:bg-[#524E91]/20":"text-gray-400 hover:text-[#524E91] hover:bg-[#524E91]/10"}`}>
+                                                                        <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                                            <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                                                                        </svg>
+                                                                    </button>
                                                                     {!u.isSelf && (
                                                                         <button onClick={() => openDeleteDialog(u)} title="Șterge utilizatorul"
                                                                             className={`p-1.5 rounded-md transition-colors cursor-pointer ${dark?"text-[#6b68a0] hover:text-rose-400 hover:bg-rose-400/10":"text-gray-300 hover:text-rose-500 hover:bg-rose-50"}`}>
@@ -336,7 +372,7 @@ export default function AdminUsersPage() {
                                         </Table>
                                     )}
                                 </div>
-                            </ScrollArea>
+                            </div>
                         </div>
                     </div>
                 </main>
@@ -370,6 +406,13 @@ export default function AdminUsersPage() {
                             onKeyDown={e => e.key === "Enter" && handleCreateUser()}
                             placeholder="Minim 6 caractere" className={inputCls}/>
                     </div>
+                    <div className="space-y-2">
+                        <Label className={labelCls}>
+                            Avatar <span className={`font-normal ${dark ? "text-[#6b68a0]" : "text-gray-400"}`}>(opțional)</span>
+                        </Label>
+                        <AvatarPicker value={form.avatar} onChange={avatar => setForm(f => ({ ...f, avatar }))}
+                            name={form.fullName} dark={dark} allowNone className="sm:gap-2"/>
+                    </div>
                     {createError && <p className="text-xs text-rose-400">{createError}</p>}
                 </div>
                 <SheetFooter className={`px-6 py-4 border-t ${dark ? "border-[#3a3768]" : "border-gray-100"} flex flex-row gap-2`}>
@@ -386,41 +429,66 @@ export default function AdminUsersPage() {
             </SheetContent>
         </Sheet>
 
-        {/* Dialog — schimbare parola */}
-        <Dialog open={!!passwordTarget} onOpenChange={open => !open && setPasswordTarget(null)}>
+        {/* Dialog — editare utilizator: nume si/sau parola */}
+        <Dialog open={!!editTarget} onOpenChange={open => !open && setEditTarget(null)}>
             <DialogContent className={dark ? "bg-[#1e1c3a] border-[#3a3768]" : ""}>
                 <DialogHeader>
-                    <DialogTitle className={dark ? "text-white" : ""}>Schimbă parola</DialogTitle>
+                    <DialogTitle className={dark ? "text-white" : ""}>Editează utilizatorul</DialogTitle>
                     <DialogDescription>
-                        Setează o parolă nouă pentru <span className="font-semibold text-foreground">{passwordTarget?.fullName}</span>.
+                        {editTarget?.email}. {editTarget?.hasPassword
+                            ? "Poți schimba doar numele, doar parola sau ambele."
+                            : "Cont Google — se poate schimba doar numele."}
                     </DialogDescription>
                 </DialogHeader>
-                <div className="space-y-1.5">
-                    <Label className={labelCls}>Parolă nouă</Label>
-                    <input
-                        autoFocus
-                        type="password"
-                        value={newPassword}
-                        onChange={e => { setNewPassword(e.target.value); setPasswordError(""); }}
-                        onKeyDown={e => e.key === "Enter" && handleChangePassword()}
-                        placeholder="Minim 6 caractere"
-                        className={inputCls}
-                    />
-                    {passwordError && <p className="text-xs text-rose-400">{passwordError}</p>}
+                <div className="space-y-4">
+                    <div className="space-y-1.5">
+                        <Label className={labelCls}>Nume complet</Label>
+                        <input
+                            autoFocus
+                            type="text"
+                            value={editName}
+                            onChange={e => { setEditName(e.target.value); setEditError(""); }}
+                            onKeyDown={e => e.key === "Enter" && handleSaveEdit()}
+                            placeholder="Ion Popescu"
+                            className={inputCls}
+                        />
+                    </div>
+                    {editTarget?.hasPassword && (
+                        <div className="space-y-1.5">
+                            <Label className={labelCls}>
+                                Parolă nouă <span className={`font-normal ${dark ? "text-[#6b68a0]" : "text-gray-400"}`}>(lasă gol ca să rămână neschimbată)</span>
+                            </Label>
+                            <input
+                                type="password"
+                                autoComplete="new-password"
+                                value={newPassword}
+                                onChange={e => { setNewPassword(e.target.value); setEditError(""); }}
+                                onKeyDown={e => e.key === "Enter" && handleSaveEdit()}
+                                placeholder="Minim 6 caractere"
+                                className={inputCls}
+                            />
+                        </div>
+                    )}
+                    {editError && <p className="text-xs text-rose-400">{editError}</p>}
                 </div>
                 <DialogFooter>
-                    <button type="button" onClick={() => setPasswordTarget(null)}
+                    <button type="button" onClick={() => setEditTarget(null)}
                         className={`h-9 px-4 rounded-lg text-sm border transition-colors ${dark ? "border-[#3a3768] text-[#9b98c8] hover:bg-[#524E91]/20 hover:text-white" : "border-gray-200 text-gray-600 hover:border-[#524E91] hover:text-[#524E91]"}`}>
                         Anulează
                     </button>
-                    <button onClick={handleChangePassword} disabled={passwordSaving}
+                    <button onClick={handleSaveEdit} disabled={editSaving}
                         className="h-9 px-4 rounded-lg text-sm font-semibold text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
                         style={{background:"linear-gradient(135deg,#524E91,#5AC4C2)"}}>
-                        {passwordSaving ? "Se salvează..." : "Salvează parola"}
+                        {editSaving ? "Se salvează..." : "Salvează"}
                     </button>
                 </DialogFooter>
             </DialogContent>
         </Dialog>
+
+        <AvatarDialog open={!!avatarTarget} onOpenChange={open => !open && setAvatarTarget(null)}
+            name={avatarTarget?.fullName} currentAvatar={avatarTarget?.avatar}
+            description={<>Alege avatarul pentru <span className="font-semibold text-foreground">{avatarTarget?.fullName}</span>.</>}
+            onSave={handleSaveAvatar}/>
 
         {/* AlertDialog — stergere utilizator */}
         <AlertDialog open={!!deleteTarget} onOpenChange={open => !open && setDeleteTarget(null)}>
